@@ -70,7 +70,7 @@ static int perf_report__add_branch_hist_entry(struct perf_tool *tool,
 	if ((sort__has_parent || symbol_conf.use_callchain)
 	    && sample->callchain) {
 		err = machine__resolve_callchain(machine, al->thread,
-						 sample->callchain, &parent);
+		                                 sample->callchain, &parent, al);
 		if (err)
 			return err;
 	}
@@ -141,7 +141,7 @@ static int perf_evsel__add_hist_entry(struct perf_evsel *evsel,
 
 	if ((sort__has_parent || symbol_conf.use_callchain) && sample->callchain) {
 		err = machine__resolve_callchain(machine, al->thread,
-						 sample->callchain, &parent);
+		                                 sample->callchain, &parent, al);
 		if (err)
 			return err;
 	}
@@ -606,6 +606,8 @@ int cmd_report(int argc, const char **argv, const char *prefix __used)
 		     "Default: fractal,0.5,callee", &parse_callchain_opt, callchain_default_opt),
 	OPT_BOOLEAN('G', "inverted", &report.inverted_callchain,
 		    "alias for inverted call graph"),
+	OPT_STRING(0, "blackbox", &blackbox_pattern, "regex",
+		   "functions to treat as black boxes in call graphs, collapsing callees"),
 	OPT_STRING('d', "dsos", &symbol_conf.dso_list_str, "dso[,dso...]",
 		   "only consider symbols in these dsos"),
 	OPT_STRING('c', "comms", &symbol_conf.comm_list_str, "comm[,comm...]",
@@ -682,6 +684,17 @@ int cmd_report(int argc, const char **argv, const char *prefix __used)
 			sort_order = "comm,dso_from,symbol_from,"
 				     "dso_to,symbol_to";
 
+	}
+
+	if (blackbox_pattern) {
+		int err = regcomp(&blackbox_regex, blackbox_pattern, REG_EXTENDED);
+		if (err) {
+			char buf[BUFSIZ];
+			regerror(err, &blackbox_regex, buf, sizeof(buf));
+			pr_err("Invalid blackbox regex: %s\n%s", blackbox_pattern, buf);
+			goto error;
+		}
+		have_blackbox = 1;
 	}
 
 	if (strcmp(report.input_name, "-") != 0)

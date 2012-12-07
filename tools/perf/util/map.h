@@ -23,6 +23,7 @@ struct ref_reloc_sym;
 struct map_groups;
 struct machine;
 struct perf_evsel;
+struct addr_location;
 
 struct map {
 	union {
@@ -160,7 +161,8 @@ void machine__delete(struct machine *self);
 int machine__resolve_callchain(struct machine *machine,
 			       struct thread *thread,
 			       struct ip_callchain *chain,
-			       struct symbol **parent);
+			       struct symbol **parent,
+			       struct addr_location *root_al);
 int maps__set_kallsyms_ref_reloc_sym(struct map **maps, const char *symbol_name,
 				     u64 addr);
 

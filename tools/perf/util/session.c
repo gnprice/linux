@@ -16,6 +16,10 @@
 #include "cpumap.h"
 #include "event-parse.h"
 
+regex_t blackbox_regex;
+const char *blackbox_pattern;
+int have_blackbox = 0;
+
 static int perf_session__open(struct perf_session *self, bool force)
 {
 	struct stat input_stat;
@@ -222,11 +226,10 @@ void machine__remove_thread(struct machine *self, struct thread *th)
 	list_add_tail(&th->node, &self->dead_threads);
 }
 
-static bool symbol__match_parent_regex(struct symbol *sym)
+static bool symbol__match_regex(struct symbol *sym, regex_t *regex)
 {
-	if (sym->name && !regexec(&parent_regex, sym->name, 0, NULL, 0))
+	if (sym->name && !regexec(regex, sym->name, 0, NULL, 0))
 		return 1;
-
 	return 0;
 }
 
@@ -291,7 +294,8 @@ struct branch_info *machine__resolve_bstack(struct machine *self,
 int machine__resolve_callchain(struct machine *self,
 			       struct thread *thread,
 			       struct ip_callchain *chain,
-			       struct symbol **parent)
+			       struct symbol **parent,
+			       struct addr_location *root_al)
 {
 	u8 cpumode = PERF_RECORD_MISC_USER;
 	unsigned int i;
@@ -339,8 +343,13 @@ int machine__resolve_callchain(struct machine *self,
 					   MAP__FUNCTION, ip, &al, NULL);
 		if (al.sym != NULL) {
 			if (sort__has_parent && !*parent &&
-			    symbol__match_parent_regex(al.sym))
+			    symbol__match_regex(al.sym, &parent_regex))
 				*parent = al.sym;
+			else if (have_blackbox && root_al &&
+			         symbol__match_regex(al.sym, &blackbox_regex)) {
+				*root_al = al;
+				callchain_cursor_reset(&callchain_cursor);
+			}
 			if (!symbol_conf.use_callchain)
 				break;
 		}
@@ -1515,7 +1524,7 @@ void perf_event__print_ip(union perf_event *event, struct perf_sample *sample,
 	if (symbol_conf.use_callchain && sample->callchain) {
 
 		if (machine__resolve_callchain(machine, al.thread,
-						sample->callchain, NULL) != 0) {
+		                               sample->callchain, NULL, NULL) != 0) {
 			if (verbose)
 				error("Failed to resolve callchain. Skipping\n");
 			return;

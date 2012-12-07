@@ -1,6 +1,7 @@
 #ifndef __PERF_SESSION_H
 #define __PERF_SESSION_H
 
+#include <regex.h>
 #include "hist.h"
 #include "event.h"
 #include "header.h"
@@ -8,6 +9,10 @@
 #include "thread.h"
 #include <linux/rbtree.h>
 #include "../../../include/linux/perf_event.h"
+
+extern regex_t blackbox_regex;
+extern const char *blackbox_pattern;
+extern int have_blackbox;
 
 struct sample_queue;
 struct ip_callchain;
