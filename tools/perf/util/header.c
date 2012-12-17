@@ -1342,7 +1342,7 @@ static void print_event_desc(struct perf_header *ph, int fd, FILE *fp)
 static void print_total_mem(struct perf_header *ph, int fd __maybe_unused,
 			    FILE *fp)
 {
-	fprintf(fp, "# total memory : %Lu kB\n", ph->env.total_mem);
+	fprintf(fp, "# total memory : %llu kB\n", ph->env.total_mem);
 }
 
 static void print_numa_topology(struct perf_header *ph, int fd __maybe_unused,

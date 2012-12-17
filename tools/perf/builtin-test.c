@@ -1051,7 +1051,7 @@ static int __test__rdpmc(void)
 		loops *= 10;
 
 		delta = now - stamp;
-		pr_debug("%14d: %14Lu\n", n, (long long)delta);
+		pr_debug("%14d: %14llu\n", n, (long long)delta);
 
 		delta_sum += delta;
 	}
