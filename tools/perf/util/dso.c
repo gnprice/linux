@@ -531,7 +531,7 @@ struct dso *dsos__find(struct list_head *head, const char *name, bool cmp_short)
 
 struct dso *__dsos__findnew(struct list_head *head, const char *name)
 {
-	struct dso *dso = dsos__find(head, name, FALSE);
+	struct dso *dso = dsos__find(head, name, false);
 
 	if (!dso) {
 		dso = dso__new(name);
