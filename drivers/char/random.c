@@ -425,8 +425,8 @@ struct entropy_store {
 	unsigned short add_ptr;
 	unsigned short input_rotate;
 	int entropy_count;
-	int entropy_total;
-	unsigned int initialized:1;
+	int entropy_since_push;
+	int best_reseed;
 
 	/* read-only again: */
 	unsigned int limit:1;
@@ -602,7 +602,7 @@ static void fast_mix(struct fast_pool *f, __u32 input[4])
  */
 static void credit_entropy_bits(struct entropy_store *r, int nbits)
 {
-	int entropy_count, orig;
+	int entropy_count, orig, best_reseed;
 	const int pool_size = r->poolinfo->poolfracbits;
 	int nfrac = nbits << ENTROPY_SHIFT;
 
@@ -660,19 +660,23 @@ retry:
 	if (cmpxchg(&r->entropy_count, orig, entropy_count) != orig)
 		goto retry;
 
-	r->entropy_total += nbits;
-	if (!r->initialized && r->entropy_total > 128) {
-		r->initialized = 1;
-		r->entropy_total = 0;
-		if (r == &nonblocking_pool) {
-			prandom_reseed_late();
-			pr_notice("random: %s pool is initialized\n", r->name);
+	best_reseed = ACCESS_ONCE(r->best_reseed);
+	while (best_reseed < nbits) {
+		if (cmpxchg(&r->best_reseed, best_reseed, nbits) == best_reseed) {
+			if (r == &nonblocking_pool && nbits > 128) {
+				prandom_reseed_late();
+				pr_notice("random: %s pool is initialized\n",
+					  r->name);
+			}
+			best_reseed = nbits;
+			break;
 		}
+		best_reseed = ACCESS_ONCE(r->best_reseed);
 	}
 
 	trace_credit_entropy_bits(r->name, nbits,
 				  entropy_count >> ENTROPY_SHIFT,
-				  r->entropy_total, _RET_IP_);
+				  best_reseed, _RET_IP_);
 
 	if (r == &input_pool) {
 		int entropy_bytes = entropy_count >> ENTROPY_SHIFT;
@@ -687,9 +691,9 @@ retry:
 		 * forth between them, until the output pools are 75%
 		 * full.
 		 */
+		r->entropy_since_push += nbits;
 		if (entropy_bytes > random_write_wakeup_thresh &&
-		    r->initialized &&
-		    r->entropy_total >= 2*random_read_wakeup_thresh) {
+		    r->entropy_since_push >= 2*random_read_wakeup_thresh) {
 			static struct entropy_store *last = &blocking_pool;
 			struct entropy_store *other = &blocking_pool;
 
@@ -701,7 +705,7 @@ retry:
 			if (last->entropy_count <=
 			    3 * last->poolinfo->poolfracbits / 4) {
 				schedule_work(&last->push_work);
-				r->entropy_total = 0;
+				r->entropy_since_push = 0;
 			}
 		}
 	}
@@ -869,7 +873,8 @@ void add_interrupt_randomness(int irq, int irq_flags)
 
 	fast_pool->last = now;
 
-	r = nonblocking_pool.initialized ? &input_pool : &nonblocking_pool;
+	r = (nonblocking_pool.best_reseed < random_read_wakeup_thresh) ?
+		&nonblocking_pool : &input_pool;
 	__mix_pool_bytes(r, &fast_pool->pool, sizeof(fast_pool->pool), NULL);
 	/*
 	 * If we don't have a valid cycle counter, and we see
@@ -1002,6 +1007,8 @@ retry:
 	if (r->limit) {
 		have_entropy = entropy_count;
 		if (r->reserve) {
+			/* Draw from what's reserved for this recipient,
+			   and what's not reserved for either */
 			BUG_ON(recipient < 0 || 1 < recipient);
 			have_entropy -= r->reserved_for[1 - recipient];
 		}
@@ -1210,11 +1217,11 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 void get_random_bytes(void *buf, int nbytes)
 {
 #if DEBUG_RANDOM_BOOT > 0
-	if (unlikely(nonblocking_pool.initialized == 0))
+	if (unlikely(nonblocking_pool.best_reseed < random_read_wakeup_thresh))
 		printk(KERN_NOTICE "random: %pF get_random_bytes called "
 		       "with %d bits of entropy available\n",
 		       (void *) _RET_IP_,
-		       nonblocking_pool.entropy_total);
+		       nonblocking_pool.best_reseed);
 #endif
 	trace_get_random_bytes(nbytes, _RET_IP_);
 	extract_entropy(&nonblocking_pool, buf, nbytes, 0, -1);
@@ -1351,10 +1358,10 @@ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 {
 	int ret;
 
-	if (unlikely(nonblocking_pool.initialized == 0))
+	if (unlikely(nonblocking_pool.best_reseed < random_read_wakeup_thresh))
 		printk_once(KERN_NOTICE "random: %s urandom read "
 			    "with %d bits of entropy available\n",
-			    current->comm, nonblocking_pool.entropy_total);
+			    current->comm, nonblocking_pool.best_reseed);
 
 	ret = extract_entropy_user(&nonblocking_pool, buf, nbytes);
 
