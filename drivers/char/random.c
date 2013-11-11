@@ -428,11 +428,15 @@ struct entropy_store {
 	int entropy_total;
 	unsigned int initialized:1;
 
-	unsigned int limit:1;  /* read-only */
+	/* read-only again: */
+	unsigned int limit:1;
+	unsigned int reserve:1;
 
 	/* lock-protected data: */
 	unsigned int last_data_init:1;
 	__u8 last_data[EXTRACT_SIZE];
+	int entropy_last;
+	int reserved_for[2];
 	/* and the contents of 'pool', sometimes */
 };
 
@@ -445,6 +449,7 @@ static struct entropy_store input_pool = {
 	.poolinfo = &poolinfo_table[0],
 	.name = "input",
 	.limit = 1,
+	.reserve = 1,
 	.lock = __SPIN_LOCK_UNLOCKED(input_pool.lock),
 	.pool = input_pool_data
 };
@@ -900,7 +905,7 @@ void add_disk_randomness(struct gendisk *disk)
  *********************************************************************/
 
 static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, int min, int rsvd);
+			       size_t nbytes, int min, int recipient);
 
 /*
  * This utility inline function is responsible for transferring entropy
@@ -928,8 +933,7 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
 	__u32	tmp[OUTPUT_POOL_WORDS];
 
-	/* For /dev/random's pool, always leave two wakeup worth's BITS */
-	int rsvd = r->limit ? 0 : random_read_wakeup_thresh/4;
+	int recipient = (r == &nonblocking_pool);
 	int bytes = nbytes;
 
 	/* pull at least as many as BYTES as wakeup BITS */
@@ -940,7 +944,7 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(r->pull));
 	bytes = extract_entropy(r->pull, tmp, bytes,
-				random_read_wakeup_thresh / 8, rsvd);
+				random_read_wakeup_thresh / 8, recipient);
 	mix_pool_bytes(r, tmp, bytes, NULL);
 	credit_entropy_bits(r, bytes*8);
 }
@@ -966,28 +970,57 @@ static void push_to_pool(struct work_struct *work)
  * given pool, and also debits the entropy count accordingly.
  */
 static size_t account(struct entropy_store *r, size_t nbytes, int min,
-		      int reserved)
+		      int recipient)
 {
-	int have_bytes;
-	int entropy_count, orig;
+	int entropy_count, orig, have_entropy;
 	size_t ibytes;
 
 	BUG_ON(r->entropy_count > r->poolinfo->poolfracbits);
 
-	/* Can we pull enough? */
+	/* r->reserved_for and r->entropy_last are protected by the lock */
+	spin_lock_irqsave(&r->lock, flags);
+
 retry:
 	entropy_count = orig = ACCESS_ONCE(r->entropy_count);
-	have_bytes = entropy_count >> (ENTROPY_SHIFT + 3);
+
+	if (r->reserve && entropy_count > r->entropy_last) {
+		/* Divide input entropy equally, up to a quota,
+		   to prevent starvation of either output pool */
+		int max_reserve = 2 * random_read_wakeup_thresh << ENTROPY_SHIFT;
+		int new_entropy = entropy_count - r->entropy_last;
+		r->entropy_last = entropy_count;
+		r->reserved_for[0] += new_entropy / 2;
+		r->reserved_for[1] += new_entropy / 2;
+		/* Odd units of entropy alternate between pools */
+		r->reserved_for[r->entropy_count % 2] += new_entropy % 2;
+		r->reserved_for[0] = min(r->reserved_for[0], max_reserve);
+		r->reserved_for[1] = min(r->reserved_for[1], max_reserve);
+	}
+
 	ibytes = nbytes;
 	/* If limited, never pull more than available */
-	if (r->limit)
-		ibytes = min_t(size_t, ibytes, have_bytes - reserved);
+	if (r->limit) {
+		have_entropy = entropy_count;
+		if (r->reserve) {
+			BUG_ON(recipient < 0 || 1 < recipient);
+			have_entropy -= r->reserved_for[1 - recipient];
+		}
+		ibytes = min_t(size_t, ibytes,
+			       have_entropy >> (ENTROPY_SHIFT + 3));
+	}
 	if (ibytes < min)
 		ibytes = 0;
 	entropy_count = max_t(int, 0,
 			      entropy_count - (ibytes << (ENTROPY_SHIFT + 3)));
 	if (ibytes && cmpxchg(&r->entropy_count, orig, entropy_count) != orig)
 		goto retry;
+
+	r->entropy_last = entropy_count;
+	if (r->reserve)
+		r->reserved_for[recipient] = max_t(0,
+		  r->reserved_for[recipient] - nbytes*8);
+
+	spin_unlock_irqrestore(&r->lock, flags);
 
 	trace_debit_entropy(r->name, 8 * ibytes);
 	if (ibytes &&
@@ -1076,7 +1109,7 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
  * pool after each pull to avoid starving other readers.
  */
 static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-				 size_t nbytes, int min, int reserved)
+				 size_t nbytes, int min, int recipient)
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
@@ -1100,7 +1133,7 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 
 	trace_extract_entropy(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
-	nbytes = account(r, nbytes, min, reserved);
+	nbytes = account(r, nbytes, min, recipient);
 
 	while (nbytes) {
 		extract_buf(r, tmp);
@@ -1184,7 +1217,7 @@ void get_random_bytes(void *buf, int nbytes)
 		       nonblocking_pool.entropy_total);
 #endif
 	trace_get_random_bytes(nbytes, _RET_IP_);
-	extract_entropy(&nonblocking_pool, buf, nbytes, 0, 0);
+	extract_entropy(&nonblocking_pool, buf, nbytes, 0, -1);
 }
 EXPORT_SYMBOL(get_random_bytes);
 
@@ -1216,7 +1249,7 @@ void get_random_bytes_arch(void *buf, int nbytes)
 	}
 
 	if (nbytes)
-		extract_entropy(&nonblocking_pool, p, nbytes, 0, 0);
+		extract_entropy(&nonblocking_pool, p, nbytes, 0, -1);
 }
 EXPORT_SYMBOL(get_random_bytes_arch);
 
