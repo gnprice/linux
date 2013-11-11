@@ -419,7 +419,7 @@ struct entropy_store {
 	struct entropy_store *pull;
 	struct work_struct push_work;
 
-	/* read-write data: */
+	/* lockless data: */
 	unsigned long last_pulled;
 	spinlock_t lock;
 	unsigned short add_ptr;
@@ -427,9 +427,13 @@ struct entropy_store {
 	int entropy_count;
 	int entropy_total;
 	unsigned int initialized:1;
-	unsigned int limit:1;
+
+	unsigned int limit:1;  /* read-only */
+
+	/* lock-protected data: */
 	unsigned int last_data_init:1;
 	__u8 last_data[EXTRACT_SIZE];
+	/* and the contents of 'pool', sometimes */
 };
 
 static void push_to_pool(struct work_struct *work);
