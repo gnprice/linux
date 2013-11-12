@@ -401,6 +401,7 @@ static struct poolinfo {
  */
 static DECLARE_WAIT_QUEUE_HEAD(random_read_wait);
 static DECLARE_WAIT_QUEUE_HEAD(random_write_wait);
+static DECLARE_WAIT_QUEUE_HEAD(urandom_read_wait);
 static struct fasync_struct *fasync;
 
 /**********************************************************************
@@ -664,6 +665,8 @@ retry:
 	while (best_reseed < nbits) {
 		if (cmpxchg(&r->best_reseed, best_reseed, nbits) == best_reseed) {
 			if (r == &nonblocking_pool && nbits > 128) {
+				/* XXX fix 128 vs random_read_wakeup_thresh */
+				wake_up_interruptible(&urandom_read_wait);
 				prandom_reseed_late();
 				pr_notice("random: %s pool is initialized\n",
 					  r->name);
@@ -684,6 +687,7 @@ retry:
 		/* should we wake readers? */
 		if (entropy_bytes >= random_read_wakeup_thresh) {
 			wake_up_interruptible(&random_read_wait);
+			wake_up_interruptible(&urandom_read_wait);
 			kill_fasync(&fasync, SIGIO, POLL_IN);
 		}
 		/* If the input pool is getting full, send some
@@ -1170,15 +1174,17 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
  * returns it in a userspace buffer.
  */
 static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
-				    size_t nbytes)
+				    size_t nbytes, int require_seeded)
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
 
 	trace_extract_entropy_user(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
-	nbytes = account(r, nbytes, 0, 0);
+	if (require_seeded && r->best_reseed < require_seeded)
+		return 0;
 
+	nbytes = account(r, nbytes, 0, 0);
 	while (nbytes) {
 		if (need_resched()) {
 			if (signal_pending(current)) {
@@ -1332,7 +1338,7 @@ random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 
 	nbytes = min_t(size_t, nbytes, SEC_XFER_SIZE);
 	while (1) {
-		n = extract_entropy_user(&blocking_pool, buf, nbytes);
+		n = extract_entropy_user(&blocking_pool, buf, nbytes, 0);
 		if (n < 0)
 			return n;
 		trace_random_read(n*8, (nbytes-n)*8,
@@ -1356,18 +1362,33 @@ random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 static ssize_t
 urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 {
-	int ret;
+	int err, n;
 
 	if (unlikely(nonblocking_pool.best_reseed < random_read_wakeup_thresh))
 		printk_once(KERN_NOTICE "random: %s urandom read "
 			    "with %d bits of entropy available\n",
 			    current->comm, nonblocking_pool.best_reseed);
 
-	ret = extract_entropy_user(&nonblocking_pool, buf, nbytes);
-
 	trace_urandom_read(8 * nbytes, ENTROPY_BITS(&nonblocking_pool),
 			   ENTROPY_BITS(&input_pool));
-	return ret;
+
+	while (1) {
+		n = extract_entropy_user(&nonblocking_pool, buf, nbytes,
+					 random_read_wakeup_thresh);
+		if (n)
+			return n;
+
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+
+		/* Wait until either this pool is seeded, or the input pool
+		   has enough entropy to seed it. */
+		err = wait_event_interruptible(urandom_read_wait,
+			max(nonblocking_pool.best_reseed, input_pool.entropy_count)
+					       >= random_read_wakeup_thresh);
+		if (err)
+			return err;
+	}
 }
 
 static unsigned int
