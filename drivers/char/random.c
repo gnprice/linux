@@ -292,8 +292,16 @@
 #define ENTROPY_BITS(r) ((r)->entropy_count >> ENTROPY_SHIFT)
 
 /*
+ * The number of bits from the input pool to use in a reseed.
+ * This is an upper bound on the security level of the RNG; the reseed
+ * won't have more entropy than this, but could have less if our
+ * estimates are not conservative.
+ */
+static int reseed_bits = 64;
+
+/*
  * The minimum number of bits of entropy before we wake up a read on
- * /dev/random.  Should be enough to do a significant reseed.
+ * /dev/random.  Should be at least 8, one byte.
  */
 static int random_read_wakeup_bits = 64;
 
@@ -680,7 +688,7 @@ retry:
 		 */
 		if (entropy_bytes > random_write_wakeup_bits &&
 		    r->initialized &&
-		    r->entropy_total >= 2*random_read_wakeup_bits) {
+		    r->entropy_total >= 2*reseed_bits) {
 			static struct entropy_store *last = &blocking_pool;
 			struct entropy_store *other = &blocking_pool;
 
@@ -952,7 +960,7 @@ static void push_to_pool(struct work_struct *work)
 	struct entropy_store *r = container_of(work, struct entropy_store,
 					      push_work);
 	BUG_ON(!r);
-	_xfer_secondary_pool(r, random_read_wakeup_bits/8);
+	_xfer_secondary_pool(r, reseed_bits/8);
 	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
 			   r->pull->entropy_count >> ENTROPY_SHIFT);
 }
@@ -1482,7 +1490,8 @@ EXPORT_SYMBOL(generate_random_uuid);
 
 #include <linux/sysctl.h>
 
-static int min_read_thresh = 8, min_write_thresh;
+static int min_reseed_bits = 32, min_read_thresh = 8, min_write_thresh;
+static int max_reseed_bits = OUTPUT_POOL_WORDS * 32;
 static int max_read_thresh = OUTPUT_POOL_WORDS * 32;
 static int max_write_thresh = INPUT_POOL_WORDS * 32;
 static char sysctl_bootid[16];
@@ -1556,6 +1565,15 @@ struct ctl_table random_table[] = {
 		.mode		= 0444,
 		.proc_handler	= proc_do_entropy,
 		.data		= &input_pool.entropy_count,
+	},
+	{
+		.procname	= "reseed_bits",
+		.data		= &reseed_bits,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_reseed_bits,
+		.extra2		= &max_reseed_bits,
 	},
 	{
 		.procname	= "read_wakeup_threshold",
