@@ -283,10 +283,10 @@
 #define ENTROPY_BITS(r) ((r)->entropy_count >> ENTROPY_SHIFT)
 
 /*
- * The minimum number of bits of entropy before we wake up a read on
- * /dev/random.  Should be enough to do a significant reseed.
+ * The minimum number of bits of entropy in a reseed of the output
+ * pool.
  */
-static int random_read_wakeup_thresh = 64;
+static int reseed_bits = 64;
 
 /*
  * If the entropy count falls under this number of bits, then we
@@ -651,7 +651,7 @@ retry:
 		 */
 		if (entropy_bytes > random_write_wakeup_thresh &&
 		    r->initialized &&
-		    r->entropy_total >= 2*random_read_wakeup_thresh) {
+		    r->entropy_total >= 2*reseed_bits) {
 			if (output_pool.entropy_count <=
 			    3 * output_pool.poolinfo->poolfracbits / 4) {
 				schedule_work(&output_pool.push_work);
@@ -888,15 +888,14 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	__u32	tmp[OUTPUT_POOL_WORDS];
 
 	int bytes = nbytes;
-	/* pull at least as many as BYTES as wakeup BITS */
-	bytes = max_t(int, bytes, random_read_wakeup_thresh / 8);
+	/* pull at least a full reseed */
+	bytes = max_t(int, bytes, reseed_bits / 8);
 	/* but never more than the buffer size */
 	bytes = min_t(int, bytes, sizeof(tmp));
 
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(r->pull));
-	bytes = extract_entropy(r->pull, tmp, bytes,
-				random_read_wakeup_thresh / 8);
+	bytes = extract_entropy(r->pull, tmp, bytes, reseed_bits / 8);
 	mix_pool_bytes(r, tmp, bytes, NULL);
 	credit_entropy_bits(r, bytes*8);
 }
@@ -912,7 +911,7 @@ static void push_to_pool(struct work_struct *work)
 	struct entropy_store *r = container_of(work, struct entropy_store,
 					      push_work);
 	BUG_ON(!r);
-	_xfer_secondary_pool(r, random_read_wakeup_thresh/8);
+	_xfer_secondary_pool(r, reseed_bits / 8);
 	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
 			   r->pull->entropy_count >> ENTROPY_SHIFT);
 }
@@ -1379,8 +1378,8 @@ EXPORT_SYMBOL(generate_random_uuid);
 
 #include <linux/sysctl.h>
 
-static int min_read_thresh = 8, min_write_thresh;
-static int max_read_thresh = OUTPUT_POOL_WORDS * 32;
+static int min_reseed_bits = 8, min_write_thresh;
+static int max_reseed_bits = OUTPUT_POOL_WORDS * 32;
 static int max_write_thresh = INPUT_POOL_WORDS * 32;
 static char sysctl_bootid[16];
 
@@ -1455,13 +1454,23 @@ struct ctl_table random_table[] = {
 		.data		= &input_pool.entropy_count,
 	},
 	{
+		/* old misleading name for compatibility */
 		.procname	= "read_wakeup_threshold",
-		.data		= &random_read_wakeup_thresh,
+		.data		= &reseed_bits,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &min_read_thresh,
-		.extra2		= &max_read_thresh,
+		.extra1		= &min_reseed_bits,
+		.extra2		= &max_reseed_bits,
+	},
+	{
+		.procname	= "reseed_bits",
+		.data		= &reseed_bits,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_reseed_bits,
+		.extra2		= &max_reseed_bits,
 	},
 	{
 		.procname	= "write_wakeup_threshold",
