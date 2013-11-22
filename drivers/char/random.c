@@ -399,7 +399,6 @@ static struct poolinfo {
 /*
  * Static global variables
  */
-static DECLARE_WAIT_QUEUE_HEAD(random_read_wait);
 static DECLARE_WAIT_QUEUE_HEAD(random_write_wait);
 static struct fasync_struct *fasync;
 
@@ -668,11 +667,6 @@ retry:
 	if (r == &input_pool) {
 		int entropy_bytes = entropy_count >> ENTROPY_SHIFT;
 
-		/* should we wake readers? */
-		if (entropy_bytes >= random_read_wakeup_thresh) {
-			wake_up_interruptible(&random_read_wait);
-			kill_fasync(&fasync, SIGIO, POLL_IN);
-		}
 		/* If the input pool is getting full, send some
 		 * entropy to the two output pools, flipping back and
 		 * forth between them, until the output pools are 75%
@@ -1279,37 +1273,6 @@ void rand_initialize_disk(struct gendisk *disk)
 #endif
 
 static ssize_t
-random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
-{
-	ssize_t n;
-
-	if (nbytes == 0)
-		return 0;
-
-	nbytes = min_t(size_t, nbytes, SEC_XFER_SIZE);
-	while (1) {
-		n = extract_entropy_user(&blocking_pool, buf, nbytes);
-		if (n < 0)
-			return n;
-		trace_random_read(n*8, (nbytes-n)*8,
-				  ENTROPY_BITS(&blocking_pool),
-				  ENTROPY_BITS(&input_pool));
-		if (n > 0)
-			return n;
-		/* Pool is (near) empty.  Maybe wait and retry. */
-
-		if (file->f_flags & O_NONBLOCK)
-			return -EAGAIN;
-
-		wait_event_interruptible(random_read_wait,
-			ENTROPY_BITS(&input_pool) >=
-			random_read_wakeup_thresh);
-		if (signal_pending(current))
-			return -ERESTARTSYS;
-	}
-}
-
-static ssize_t
 urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 {
 	int ret;
@@ -1324,21 +1287,6 @@ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 	trace_urandom_read(8 * nbytes, ENTROPY_BITS(&nonblocking_pool),
 			   ENTROPY_BITS(&input_pool));
 	return ret;
-}
-
-static unsigned int
-random_poll(struct file *file, poll_table * wait)
-{
-	unsigned int mask;
-
-	poll_wait(file, &random_read_wait, wait);
-	poll_wait(file, &random_write_wait, wait);
-	mask = 0;
-	if (ENTROPY_BITS(&input_pool) >= random_read_wakeup_thresh)
-		mask |= POLLIN | POLLRDNORM;
-	if (ENTROPY_BITS(&input_pool) < random_write_wakeup_thresh)
-		mask |= POLLOUT | POLLWRNORM;
-	return mask;
 }
 
 static int
@@ -1434,15 +1382,6 @@ static int random_fasync(int fd, struct file *filp, int on)
 {
 	return fasync_helper(fd, filp, on, &fasync);
 }
-
-const struct file_operations random_fops = {
-	.read  = random_read,
-	.write = random_write,
-	.poll  = random_poll,
-	.unlocked_ioctl = random_ioctl,
-	.fasync = random_fasync,
-	.llseek = noop_llseek,
-};
 
 const struct file_operations urandom_fops = {
 	.read  = urandom_read,
