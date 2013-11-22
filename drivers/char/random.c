@@ -891,9 +891,9 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 	                       int *credit_bits);
 
 /*
- * This utility inline function is responsible for transferring entropy
- * from the primary pool to the secondary extraction pool. We make
- * sure we pull enough for a 'catastrophic reseed'.
+ * This utility inline function is responsible for transferring
+ * entropy from the input pool to the output pool.  We make sure we
+ * pull enough for a 'catastrophic reseed'.
  */
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
 static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
