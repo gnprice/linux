@@ -433,7 +433,6 @@ struct entropy_store {
 
 static void push_to_pool(struct work_struct *work);
 static __u32 input_pool_data[INPUT_POOL_WORDS];
-static __u32 blocking_pool_data[OUTPUT_POOL_WORDS];
 static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
 
 static struct entropy_store input_pool = {
@@ -442,17 +441,6 @@ static struct entropy_store input_pool = {
 	.limit = 1,
 	.lock = __SPIN_LOCK_UNLOCKED(input_pool.lock),
 	.pool = input_pool_data
-};
-
-static struct entropy_store blocking_pool = {
-	.poolinfo = &poolinfo_table[1],
-	.name = "blocking",
-	.limit = 1,
-	.pull = &input_pool,
-	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
-	.pool = blocking_pool_data,
-	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
-					push_to_pool),
 };
 
 static struct entropy_store nonblocking_pool = {
@@ -668,24 +656,14 @@ retry:
 		int entropy_bytes = entropy_count >> ENTROPY_SHIFT;
 
 		/* If the input pool is getting full, send some
-		 * entropy to the two output pools, flipping back and
-		 * forth between them, until the output pools are 75%
-		 * full.
+		 * entropy to the output pool.
 		 */
 		if (entropy_bytes > random_write_wakeup_thresh &&
 		    r->initialized &&
 		    r->entropy_total >= 2*random_read_wakeup_thresh) {
-			static struct entropy_store *last = &blocking_pool;
-			struct entropy_store *other = &blocking_pool;
-
-			if (last == &blocking_pool)
-				other = &nonblocking_pool;
-			if (other->entropy_count <=
-			    3 * other->poolinfo->poolfracbits / 4)
-				last = other;
-			if (last->entropy_count <=
-			    3 * last->poolinfo->poolfracbits / 4) {
-				schedule_work(&last->push_work);
+			if (nonblocking_pool.entropy_count <=
+			    3 * nonblocking_pool.poolinfo->poolfracbits / 4) {
+				schedule_work(&nonblocking_pool.push_work);
 				r->entropy_total = 0;
 			}
 		}
@@ -1249,7 +1227,6 @@ static void init_std_data(struct entropy_store *r)
 static int rand_initialize(void)
 {
 	init_std_data(&input_pool);
-	init_std_data(&blocking_pool);
 	init_std_data(&nonblocking_pool);
 	return 0;
 }
@@ -1316,9 +1293,6 @@ static ssize_t random_write(struct file *file, const char __user *buffer,
 {
 	size_t ret;
 
-	ret = write_pool(&blocking_pool, buffer, count);
-	if (ret)
-		return ret;
 	ret = write_pool(&nonblocking_pool, buffer, count);
 	if (ret)
 		return ret;
@@ -1371,7 +1345,6 @@ static long random_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			return -EPERM;
 		input_pool.entropy_count = 0;
 		nonblocking_pool.entropy_count = 0;
-		blocking_pool.entropy_count = 0;
 		return 0;
 	default:
 		return -EINVAL;
