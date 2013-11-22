@@ -406,8 +406,6 @@ struct entropy_store {
 	const struct poolinfo *poolinfo;
 	__u32 *pool;
 	const char *name;
-	struct entropy_store *pull;
-	struct work_struct push_work;
 
 	/* read-write data: */
 	unsigned long last_pulled;
@@ -435,12 +433,12 @@ static struct entropy_store input_pool = {
 static struct entropy_store output_pool = {
 	.poolinfo = &poolinfo_table[1],
 	.name = "output",
-	.pull = &input_pool,
 	.lock = __SPIN_LOCK_UNLOCKED(output_pool.lock),
 	.pool = output_pool_data,
-	.push_work = __WORK_INITIALIZER(output_pool.push_work,
-					push_to_pool),
 };
+
+struct work_struct push_work = __WORK_INITIALIZER(
+	push_work, push_to_pool);
 
 static __u32 const twist_table[8] = {
 	0x00000000, 0x3b6e20c8, 0x76dc4190, 0x4db26158,
@@ -652,7 +650,7 @@ retry:
 		    r->entropy_total >= 2*reseed_bits) {
 			if (output_pool.entropy_count <=
 			    3 * output_pool.poolinfo->poolfracbits / 4) {
-				schedule_work(&output_pool.push_work);
+				schedule_work(&push_work);
 				r->entropy_total = 0;
 			}
 		}
@@ -867,7 +865,9 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
 static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
-	if (r == &output_pool && random_min_urandom_seed) {
+	if (r != &output_pool)
+		return;
+	if (random_min_urandom_seed) {
 		unsigned long now = jiffies;
 
 		if (time_before(now,
@@ -875,13 +875,12 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 			return;
 		r->last_pulled = now;
 	}
-	if (r->pull &&
-	    r->entropy_count < (nbytes << (ENTROPY_SHIFT + 3)) &&
+	if (r->entropy_count < (nbytes << (ENTROPY_SHIFT + 3)) &&
 	    r->entropy_count < r->poolinfo->poolfracbits)
-		_xfer_secondary_pool(r, nbytes);
+		_xfer_secondary_pool(nbytes);
 }
 
-static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
+static void _xfer_secondary_pool(size_t nbytes)
 {
 	__u32	tmp[OUTPUT_POOL_WORDS];
 
@@ -891,27 +890,24 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	/* but never more than the buffer size */
 	bytes = min_t(int, bytes, sizeof(tmp));
 
-	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
-				  ENTROPY_BITS(r), ENTROPY_BITS(r->pull));
-	bytes = extract_entropy(r->pull, tmp, bytes, reseed_bits / 8);
-	mix_pool_bytes(r, tmp, bytes, NULL);
-	credit_entropy_bits(r, bytes*8);
+	trace_xfer_secondary_pool(output_pool->name, bytes * 8, nbytes * 8,
+			ENTROPY_BITS(output_pool), ENTROPY_BITS(input_pool));
+	bytes = extract_entropy(input_pool, tmp, bytes, reseed_bits / 8);
+	mix_pool_bytes(output_pool, tmp, bytes, NULL);
+	credit_entropy_bits(output_pool, bytes*8);
 }
 
 /*
  * Used as a workqueue function so that when the input pool is getting
- * full, we can "spill over" some entropy to the output pools.  That
- * way the output pools can store some of the excess entropy instead
+ * full, we can "spill over" some entropy to the output pool.  That
+ * way the output pool can store some of the excess entropy instead
  * of letting it go to waste.
  */
 static void push_to_pool(struct work_struct *work)
 {
-	struct entropy_store *r = container_of(work, struct entropy_store,
-					      push_work);
-	BUG_ON(!r);
-	_xfer_secondary_pool(r, reseed_bits / 8);
-	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
-			   r->pull->entropy_count >> ENTROPY_SHIFT);
+	_xfer_secondary_pool(reseed_bits / 8);
+	trace_push_to_pool(output_pool->name, output_pool->entropy_count >> ENTROPY_SHIFT,
+			   input_pool->entropy_count >> ENTROPY_SHIFT);
 }
 
 /*
