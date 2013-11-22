@@ -433,7 +433,7 @@ struct entropy_store {
 
 static void push_to_pool(struct work_struct *work);
 static __u32 input_pool_data[INPUT_POOL_WORDS];
-static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
+static __u32 output_pool_data[OUTPUT_POOL_WORDS];
 
 static struct entropy_store input_pool = {
 	.poolinfo = &poolinfo_table[0],
@@ -443,13 +443,13 @@ static struct entropy_store input_pool = {
 	.pool = input_pool_data
 };
 
-static struct entropy_store nonblocking_pool = {
+static struct entropy_store output_pool = {
 	.poolinfo = &poolinfo_table[1],
-	.name = "nonblocking",
+	.name = "output",
 	.pull = &input_pool,
-	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
-	.pool = nonblocking_pool_data,
-	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
+	.lock = __SPIN_LOCK_UNLOCKED(output_pool.lock),
+	.pool = output_pool_data,
+	.push_work = __WORK_INITIALIZER(output_pool.push_work,
 					push_to_pool),
 };
 
@@ -642,7 +642,7 @@ retry:
 	if (!r->initialized && r->entropy_total > 128) {
 		r->initialized = 1;
 		r->entropy_total = 0;
-		if (r == &nonblocking_pool) {
+		if (r == &output_pool) {
 			prandom_reseed_late();
 			pr_notice("random: %s pool is initialized\n", r->name);
 		}
@@ -661,9 +661,9 @@ retry:
 		if (entropy_bytes > random_write_wakeup_thresh &&
 		    r->initialized &&
 		    r->entropy_total >= 2*random_read_wakeup_thresh) {
-			if (nonblocking_pool.entropy_count <=
-			    3 * nonblocking_pool.poolinfo->poolfracbits / 4) {
-				schedule_work(&nonblocking_pool.push_work);
+			if (output_pool.entropy_count <=
+			    3 * output_pool.poolinfo->poolfracbits / 4) {
+				schedule_work(&output_pool.push_work);
 				r->entropy_total = 0;
 			}
 		}
@@ -697,11 +697,11 @@ struct timer_rand_state {
 #define INIT_TIMER_RAND_STATE { INITIAL_JIFFIES, };
 
 /*
- * Add device- or boot-specific data to the input and nonblocking
+ * Add device- or boot-specific data to the input and output
  * pools to help initialize them to unique values.
  *
  * None of this adds any entropy, it is meant to avoid the
- * problem of the nonblocking pool having similar initial state
+ * problem of the output pool having similar initial state
  * across largely identical devices.
  */
 void add_device_randomness(const void *buf, unsigned int size)
@@ -715,10 +715,10 @@ void add_device_randomness(const void *buf, unsigned int size)
 	_mix_pool_bytes(&input_pool, &time, sizeof(time), NULL);
 	spin_unlock_irqrestore(&input_pool.lock, flags);
 
-	spin_lock_irqsave(&nonblocking_pool.lock, flags);
-	_mix_pool_bytes(&nonblocking_pool, buf, size, NULL);
-	_mix_pool_bytes(&nonblocking_pool, &time, sizeof(time), NULL);
-	spin_unlock_irqrestore(&nonblocking_pool.lock, flags);
+	spin_lock_irqsave(&output_pool.lock, flags);
+	_mix_pool_bytes(&output_pool, buf, size, NULL);
+	_mix_pool_bytes(&output_pool, &time, sizeof(time), NULL);
+	spin_unlock_irqrestore(&output_pool.lock, flags);
 }
 EXPORT_SYMBOL(add_device_randomness);
 
@@ -749,7 +749,7 @@ static void add_timer_randomness(struct timer_rand_state *state, unsigned num)
 	sample.jiffies = jiffies;
 	sample.cycles = random_get_entropy();
 	sample.num = num;
-	r = nonblocking_pool.initialized ? &input_pool : &nonblocking_pool;
+	r = output_pool.initialized ? &input_pool : &output_pool;
 	mix_pool_bytes(r, &sample, sizeof(sample), NULL);
 
 	/*
@@ -832,7 +832,7 @@ void add_interrupt_randomness(int irq, int irq_flags)
 
 	fast_pool->last = now;
 
-	r = nonblocking_pool.initialized ? &input_pool : &nonblocking_pool;
+	r = output_pool.initialized ? &input_pool : &output_pool;
 	__mix_pool_bytes(r, &fast_pool->pool, sizeof(fast_pool->pool), NULL);
 	/*
 	 * If we don't have a valid cycle counter, and we see
@@ -1145,14 +1145,14 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 void get_random_bytes(void *buf, int nbytes)
 {
 #if DEBUG_RANDOM_BOOT > 0
-	if (unlikely(nonblocking_pool.initialized == 0))
+	if (unlikely(output_pool.initialized == 0))
 		printk(KERN_NOTICE "random: %pF get_random_bytes called "
 		       "with %d bits of entropy available\n",
 		       (void *) _RET_IP_,
-		       nonblocking_pool.entropy_total);
+		       output_pool.entropy_total);
 #endif
 	trace_get_random_bytes(nbytes, _RET_IP_);
-	extract_entropy(&nonblocking_pool, buf, nbytes, 0, 0);
+	extract_entropy(&output_pool, buf, nbytes, 0, 0);
 }
 EXPORT_SYMBOL(get_random_bytes);
 
@@ -1184,7 +1184,7 @@ void get_random_bytes_arch(void *buf, int nbytes)
 	}
 
 	if (nbytes)
-		extract_entropy(&nonblocking_pool, p, nbytes, 0, 0);
+		extract_entropy(&output_pool, p, nbytes, 0, 0);
 }
 EXPORT_SYMBOL(get_random_bytes_arch);
 
@@ -1227,7 +1227,7 @@ static void init_std_data(struct entropy_store *r)
 static int rand_initialize(void)
 {
 	init_std_data(&input_pool);
-	init_std_data(&nonblocking_pool);
+	init_std_data(&output_pool);
 	return 0;
 }
 early_initcall(rand_initialize);
@@ -1254,14 +1254,14 @@ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 {
 	int ret;
 
-	if (unlikely(nonblocking_pool.initialized == 0))
+	if (unlikely(output_pool.initialized == 0))
 		printk_once(KERN_NOTICE "random: %s urandom read "
 			    "with %d bits of entropy available\n",
-			    current->comm, nonblocking_pool.entropy_total);
+			    current->comm, output_pool.entropy_total);
 
-	ret = extract_entropy_user(&nonblocking_pool, buf, nbytes);
+	ret = extract_entropy_user(&output_pool, buf, nbytes);
 
-	trace_urandom_read(8 * nbytes, ENTROPY_BITS(&nonblocking_pool),
+	trace_urandom_read(8 * nbytes, ENTROPY_BITS(&output_pool),
 			   ENTROPY_BITS(&input_pool));
 	return ret;
 }
@@ -1293,7 +1293,7 @@ static ssize_t random_write(struct file *file, const char __user *buffer,
 {
 	size_t ret;
 
-	ret = write_pool(&nonblocking_pool, buffer, count);
+	ret = write_pool(&output_pool, buffer, count);
 	if (ret)
 		return ret;
 
@@ -1344,7 +1344,7 @@ static long random_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
 		input_pool.entropy_count = 0;
-		nonblocking_pool.entropy_count = 0;
+		output_pool.entropy_count = 0;
 		return 0;
 	default:
 		return -EINVAL;
