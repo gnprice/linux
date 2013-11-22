@@ -417,7 +417,6 @@ struct entropy_store {
 	int entropy_count;
 	int entropy_total;
 	unsigned int initialized:1;
-	unsigned int limit:1;
 	unsigned int last_data_init:1;
 	__u8 last_data[EXTRACT_SIZE];
 };
@@ -429,7 +428,6 @@ static __u32 output_pool_data[OUTPUT_POOL_WORDS];
 static struct entropy_store input_pool = {
 	.poolinfo = &poolinfo_table[0],
 	.name = "input",
-	.limit = 1,
 	.lock = __SPIN_LOCK_UNLOCKED(input_pool.lock),
 	.pool = input_pool_data
 };
@@ -869,7 +867,7 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
 static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
-	if (r->limit == 0 && random_min_urandom_seed) {
+	if (r == &output_pool && random_min_urandom_seed) {
 		unsigned long now = jiffies;
 
 		if (time_before(now,
@@ -933,8 +931,8 @@ retry:
 	entropy_count = orig = ACCESS_ONCE(r->entropy_count);
 	have_bytes = entropy_count >> (ENTROPY_SHIFT + 3);
 	ibytes = nbytes;
-	/* If limited, never pull more than available */
-	if (r->limit)
+	/* From input pool, never pull more than available */
+	if (r == &input_pool)
 		ibytes = min_t(size_t, ibytes, have_bytes);
 	if (ibytes < min)
 		ibytes = 0;
