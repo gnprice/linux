@@ -106,18 +106,9 @@
  * This interface will return the requested number of random bytes,
  * and place it in the requested buffer.
  *
- * The two other interfaces are two character devices /dev/random and
- * /dev/urandom.  /dev/random is suitable for use when very high
- * quality randomness is desired (for example, for key generation or
- * one-time pads), as it will only return a maximum of the number of
- * bits of randomness (as estimated by the random number generator)
- * contained in the entropy pool.
- *
- * The /dev/urandom device does not have this limit, and will return
- * as many bytes as are requested.  As more and more random bytes are
- * requested without giving time for the entropy pool to recharge,
- * this will result in random numbers that are merely cryptographically
- * strong.  For many applications, however, this is acceptable.
+ * The two other interfaces are two equivalent character devices
+ * /dev/random and /dev/urandom.  Each device provides an unlimited
+ * stream of cryptographically random numbers.
  *
  * Exported interfaces ---- input
  * ==============================
