@@ -923,12 +923,13 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
 	__u32	tmp[OUTPUT_POOL_WORDS];
-	int bytes, reserved_bytes;
+	int reserved_bytes;
+	size_t bytes;
 
 	/* pull at least as much as a wakeup */
-	bytes = max_t(int, nbytes, random_read_wakeup_bits / 8);
+	bytes = max_t(size_t, nbytes, random_read_wakeup_bits / 8);
 	/* but never more than the buffer size */
-	bytes = min_t(int, bytes, sizeof(tmp));
+	bytes = min(bytes, sizeof(tmp));
 
 	/* reserve some for /dev/random's pool, unless we really need it */
 	reserved_bytes = 0;
