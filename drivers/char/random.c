@@ -919,8 +919,8 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
 	__u32	tmp[OUTPUT_POOL_WORDS];
 
-	/* For /dev/random's pool, always leave two wakeups' worth */
-	int rsvd_bytes = r == &blocking_pool ? random_read_wakeup_bits / 4 : 0;
+	/* Always leave two wakeups' worth FOR /dev/random's pool */
+	int rsvd_bytes = r == &blocking_pool ? 0 : random_read_wakeup_bits / 4;
 	int bytes = nbytes;
 
 	/* pull at least as many as a wakeup */
