@@ -427,7 +427,6 @@ struct entropy_store {
 	int entropy_count;
 	int entropy_total;
 	unsigned int initialized:1;
-	unsigned int limit:1;
 	unsigned int last_data_init:1;
 	__u8 last_data[EXTRACT_SIZE];
 };
@@ -440,7 +439,6 @@ static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
 static struct entropy_store input_pool = {
 	.poolinfo = &poolinfo_table[0],
 	.name = "input",
-	.limit = 1,
 	.lock = __SPIN_LOCK_UNLOCKED(input_pool.lock),
 	.pool = input_pool_data
 };
@@ -448,7 +446,6 @@ static struct entropy_store input_pool = {
 static struct entropy_store blocking_pool = {
 	.poolinfo = &poolinfo_table[1],
 	.name = "blocking",
-	.limit = 1,
 	.pull = &input_pool,
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 	.pool = blocking_pool_data,
@@ -906,7 +903,7 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
 static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
-	if (r->limit == 0 && random_min_urandom_seed) {
+	if (r == &nonblocking_pool && random_min_urandom_seed) {
 		unsigned long now = jiffies;
 
 		if (time_before(now,
@@ -925,7 +922,7 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	__u32	tmp[OUTPUT_POOL_WORDS];
 
 	/* For /dev/random's pool, always leave two wakeups' worth */
-	int rsvd_bytes = r->limit ? 0 : random_read_wakeup_bits / 4;
+	int rsvd_bytes = r == &blocking_pool ? random_read_wakeup_bits / 4 : 0;
 	int bytes = nbytes;
 
 	/* pull at least as many as a wakeup */
@@ -975,8 +972,8 @@ retry:
 	entropy_count = orig = ACCESS_ONCE(r->entropy_count);
 	have_bytes = entropy_count >> (ENTROPY_SHIFT + 3);
 	ibytes = nbytes;
-	/* If limited, never pull more than available */
-	if (r->limit)
+	/* On the input pool and /dev/random, never pull more than available */
+	if (r != &nonblocking_pool)
 		ibytes = min_t(size_t, ibytes, have_bytes - reserved);
 	if (ibytes < min)
 		ibytes = 0;
