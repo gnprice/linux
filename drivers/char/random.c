@@ -922,16 +922,24 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
-	__u32	tmp[OUTPUT_POOL_WORDS];
-	int reserved_bytes;
-	size_t bytes;
+	__u32 tmp[OUTPUT_POOL_WORDS];
+	int bytes, min_bytes, reserved_bytes;
 
-	/* pull at least as many as a wakeup */
-	bytes = max_t(size_t, nbytes, random_read_wakeup_bits / 8);
-	/* but never more than the buffer size */
-	bytes = min(bytes, sizeof(tmp));
+	/* Try to pull a full wakeup's worth if we might have just woken up
+	 * for it, and a full reseed's worth (which is controlled by the same
+	 * parameter) for the nonblocking pool... */
+	if (r == &blocking_pool || r->initialized) {
+		min_bytes = random_read_wakeup_bits / 8;
+	} else {
+		/* ... except if we're hardly seeded at all, we'll settle for
+		 * enough to double what we have ... */
+		min_bytes = min(random_read_wakeup_bits / 8,
+				(r->entropy_total+7) / 8);
+	}
+	/* ... and in any event no more than our (giant) buffer holds. */
+	bytes = min(sizeof(tmp), max_t(size_t, min_bytes, nbytes));
 
-	/* reserve some for /dev/random's pool, unless we really need it */
+	/* Reserve some for /dev/random's pool, unless we really need it. */
 	reserved_bytes = 0;
 	if (!r->limit && r->initialized) {
 		reserved_bytes = 2 * (random_read_wakeup_bits / 8);
@@ -939,8 +947,7 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(r->pull));
-	bytes = extract_entropy(r->pull, tmp, bytes,
-				random_read_wakeup_bits / 8, reserved_bytes);
+	bytes = extract_entropy(r->pull, tmp, bytes, min_bytes, reserved_bytes);
 	mix_pool_bytes(r, tmp, bytes, NULL);
 	credit_entropy_bits(r, bytes*8);
 }
