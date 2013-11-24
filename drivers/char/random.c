@@ -416,7 +416,6 @@ struct entropy_store {
 	const struct poolinfo *poolinfo;
 	__u32 *pool;
 	const char *name;
-	struct entropy_store *pull;
 	struct work_struct push_work;
 
 	/* read-write data: */
@@ -446,7 +445,6 @@ static struct entropy_store input_pool = {
 static struct entropy_store blocking_pool = {
 	.poolinfo = &poolinfo_table[1],
 	.name = "blocking",
-	.pull = &input_pool,
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 	.pool = blocking_pool_data,
 	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
@@ -456,7 +454,6 @@ static struct entropy_store blocking_pool = {
 static struct entropy_store nonblocking_pool = {
 	.poolinfo = &poolinfo_table[1],
 	.name = "nonblocking",
-	.pull = &input_pool,
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
 	.pool = nonblocking_pool_data,
 	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
@@ -903,6 +900,8 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
 static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
+	if (r == &input_pool)
+		return;
 	if (r == &nonblocking_pool && random_min_urandom_seed) {
 		unsigned long now = jiffies;
 
@@ -911,8 +910,7 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 			return;
 		r->last_pulled = now;
 	}
-	if (r->pull &&
-	    r->entropy_count < (nbytes << (ENTROPY_SHIFT + 3)) &&
+	if (r->entropy_count < (nbytes << (ENTROPY_SHIFT + 3)) &&
 	    r->entropy_count < r->poolinfo->poolfracbits)
 		_xfer_secondary_pool(r, nbytes);
 }
@@ -931,8 +929,8 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	bytes = min_t(int, bytes, sizeof(tmp));
 
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
-				  ENTROPY_BITS(r), ENTROPY_BITS(r->pull));
-	bytes = extract_entropy(r->pull, tmp, bytes,
+				  ENTROPY_BITS(r), ENTROPY_BITS(&input_pool));
+	bytes = extract_entropy(&input_pool, tmp, bytes,
 				random_read_wakeup_bits / 8, rsvd_bytes);
 	mix_pool_bytes(r, tmp, bytes, NULL);
 	credit_entropy_bits(r, bytes*8);
@@ -951,7 +949,7 @@ static void push_to_pool(struct work_struct *work)
 	BUG_ON(!r);
 	_xfer_secondary_pool(r, random_read_wakeup_bits/8);
 	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
-			   r->pull->entropy_count >> ENTROPY_SHIFT);
+			   input_pool.entropy_count >> ENTROPY_SHIFT);
 }
 
 /*
