@@ -903,7 +903,8 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
 	if (r == &input_pool)
 		return;
-	if (r == &nonblocking_pool && random_min_urandom_seed) {
+	if (r == &nonblocking_pool && r->initialized
+	    && random_min_urandom_seed) {
 		unsigned long now = jiffies;
 
 		if (time_before(now,
