@@ -673,10 +673,10 @@ retry:
 				  acct->entropy_total, _RET_IP_);
 
 	if (acct == &input_pool.a) {
-		int entropy_bytes = entropy_count >> ENTROPY_SHIFT;
+		int entropy_bits = entropy_count >> ENTROPY_SHIFT;
 
 		/* should we wake readers? */
-		if (entropy_bytes >= random_read_wakeup_bits) {
+		if (entropy_bits >= random_read_wakeup_bits) {
 			wake_up_interruptible(&random_read_wait);
 			kill_fasync(&fasync, SIGIO, POLL_IN);
 		}
@@ -685,7 +685,7 @@ retry:
 		 * forth between them, until the output pools are 75%
 		 * full.
 		 */
-		if (entropy_bytes > random_write_wakeup_bits &&
+		if (entropy_bits > random_write_wakeup_bits &&
 		    acct->initialized &&
 		    acct->entropy_total >= 2*random_read_wakeup_bits) {
 			static struct entropy_store *last = &_blocking_pool;
