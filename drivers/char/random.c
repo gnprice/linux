@@ -426,16 +426,13 @@ struct entropy_store {
 	__u32 *pool;
 	const char *name;
 	struct entropy_account a;
-	struct work_struct push_work;
 
 	/* read-write data: */
-	unsigned long last_pulled;
 	spinlock_t lock;
 	unsigned short add_ptr;
 	unsigned short input_rotate;
 };
 
-static void push_to_pool(struct work_struct *work);
 static __u32 input_pool_data[INPUT_POOL_WORDS];
 static __u32 blocking_pool_data[OUTPUT_POOL_WORDS];
 static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
@@ -457,8 +454,6 @@ static struct entropy_store _blocking_pool = {
 		),
 	.lock = __SPIN_LOCK_UNLOCKED(_blocking_pool.lock),
 	.pool = blocking_pool_data,
-	.push_work = __WORK_INITIALIZER(_blocking_pool.push_work,
-					push_to_pool),
 };
 
 static struct entropy_store _nonblocking_pool = {
@@ -468,8 +463,6 @@ static struct entropy_store _nonblocking_pool = {
 		),
 	.lock = __SPIN_LOCK_UNLOCKED(_nonblocking_pool.lock),
 	.pool = nonblocking_pool_data,
-	.push_work = __WORK_INITIALIZER(_nonblocking_pool.push_work,
-					push_to_pool),
 };
 
 static __u32 const twist_table[8] = {
@@ -874,9 +867,13 @@ void add_disk_randomness(struct gendisk *disk)
  *
  *********************************************************************/
 
+static void push_to_pool(struct work_struct *work);
+
 struct generator {
 	struct entropy_account *a;
 	struct entropy_store *_store;
+	unsigned long last_pulled;
+	struct work_struct push_work;
 
 	/* Lock-protected data: */
 	spinlock_t lock;
@@ -888,12 +885,16 @@ static struct generator blocking_pool = {
 	._store = &_blocking_pool,
 	.a = &_blocking_pool.a,
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
+	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
+					push_to_pool),
 };
 
 static struct generator nonblocking_pool = {
 	._store = &_nonblocking_pool,
 	.a = &_nonblocking_pool.a,
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
+	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
+					push_to_pool),
 };
 
 static void mix_generator_bytes(struct generator *gen, const void *in,
@@ -923,23 +924,20 @@ static ssize_t extract_entropy_xfer(void *buf, size_t nbytes,
  * entropy from the input pool to the output pool.  We make sure we
  * pull enough for a 'catastrophic reseed'.
  */
-static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
-static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
+static void _xfer_secondary_pool(struct generator *gen, size_t nbytes);
+static void xfer_secondary_pool(struct generator *gen, size_t nbytes)
 {
-	if (r == &input_pool)
-		return;
-	if (r == &_nonblocking_pool && r->a.initialized
+	if (gen == &nonblocking_pool && gen->a->initialized
 	    && random_min_urandom_seed) {
 		unsigned long now = jiffies;
-
 		if (time_before(now,
-				r->last_pulled + random_min_urandom_seed * HZ))
+				gen->last_pulled + random_min_urandom_seed * HZ))
 			return;
-		r->last_pulled = now;
+		gen->last_pulled = now;
 	}
-	if (r->a.entropy_count < (nbytes << (ENTROPY_SHIFT + 3)) &&
-	    r->a.entropy_count < r->poolinfo->poolfracbits)
-		_xfer_secondary_pool(r, nbytes);
+	if (gen->a->entropy_count < (nbytes << (ENTROPY_SHIFT + 3)) &&
+	    gen->a->entropy_count < gen->a->poolinfo->poolfracbits)
+		_xfer_secondary_pool(gen, nbytes);
 }
 
 static void account_xfer(struct entropy_account *dest, int nbytes,
@@ -964,17 +962,17 @@ static void account_xfer(struct entropy_account *dest, int nbytes,
 	}
 }
 
-static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
+static void _xfer_secondary_pool(struct generator *gen, size_t nbytes)
 {
 	__u32 tmp[OUTPUT_POOL_WORDS];
 	int bytes, credit_bits;
 
 	bytes = min_t(int, nbytes, sizeof(tmp));
-	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
-				  ENTROPY_BITS(r), ENTROPY_BITS(&input_pool));
-	bytes = extract_entropy_xfer(tmp, bytes, &r->a, &credit_bits);
-	mix_pool_bytes(r, tmp, bytes, NULL);
-	credit_entropy_bits(&r->a, credit_bits);
+	trace_xfer_secondary_pool(gen->a->name, bytes * 8, nbytes * 8,
+			ENTROPY_BITS_A(gen->a), ENTROPY_BITS(&input_pool));
+	bytes = extract_entropy_xfer(tmp, bytes, gen->a, &credit_bits);
+	mix_generator_bytes(gen, tmp, bytes);
+	credit_entropy_bits(gen->a, credit_bits);
 }
 
 /*
@@ -985,11 +983,11 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
  */
 static void push_to_pool(struct work_struct *work)
 {
-	struct entropy_store *r = container_of(work, struct entropy_store,
+	struct generator *gen = container_of(work, struct generator,
 					      push_work);
-	BUG_ON(!r);
-	_xfer_secondary_pool(r, random_read_wakeup_bits/8);
-	trace_push_to_pool(r->name, r->a.entropy_count >> ENTROPY_SHIFT,
+	BUG_ON(!gen);
+	_xfer_secondary_pool(gen, random_read_wakeup_bits/8);
+	trace_push_to_pool(gen->a->name, gen->a->entropy_count >> ENTROPY_SHIFT,
 			   input_pool.a.entropy_count >> ENTROPY_SHIFT);
 }
 
@@ -1003,16 +1001,16 @@ static void maybe_push_entropy(int entropy_bits)
 	    input_pool.a.entropy_total >= 2*random_read_wakeup_bits) {
 		/* Flip back and forth between the output pools, until
 		 * they are 75% full. */
-		static struct entropy_store *last = &_blocking_pool;
-		struct entropy_store *other = &_blocking_pool;
+		static struct generator *last = &blocking_pool;
+		struct generator *other = &blocking_pool;
 
-		if (last == &_blocking_pool)
-			other = &_nonblocking_pool;
-		if (other->a.entropy_count <=
-		    3 * other->a.poolinfo->poolfracbits / 4)
+		if (last == &blocking_pool)
+			other = &nonblocking_pool;
+		if (other->a->entropy_count <=
+		    3 * other->a->poolinfo->poolfracbits / 4)
 			last = other;
-		if (last->a.entropy_count <=
-		    3 * last->a.poolinfo->poolfracbits / 4) {
+		if (last->a->entropy_count <=
+		    3 * last->a->poolinfo->poolfracbits / 4) {
 			schedule_work(&last->push_work);
 			input_pool.a.entropy_total = 0;
 		}
@@ -1154,7 +1152,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 			spin_unlock_irqrestore(&gen->lock, flags);
 			trace_extract_entropy(gen->a->name, EXTRACT_SIZE,
 					      ENTROPY_BITS_A(gen->a), _RET_IP_);
-			xfer_secondary_pool(gen->_store, EXTRACT_SIZE);
+			xfer_secondary_pool(gen, EXTRACT_SIZE);
 			extract_generator(gen, tmp);
 
 			spin_lock_irqsave(&gen->lock, flags);
@@ -1165,7 +1163,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 
 	trace_extract_entropy(gen->a->name, nbytes,
 			      ENTROPY_BITS_A(gen->a), _RET_IP_);
-	xfer_secondary_pool(gen->_store, nbytes);
+	xfer_secondary_pool(gen, nbytes);
 	nbytes = account(gen->a, nbytes, NULL, NULL);
 
 	while (nbytes) {
@@ -1229,7 +1227,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 
 	trace_extract_entropy_user(gen->a->name, nbytes,
 				   ENTROPY_BITS_A(gen->a), _RET_IP_);
-	xfer_secondary_pool(gen->_store, nbytes);
+	xfer_secondary_pool(gen, nbytes);
 	nbytes = account(gen->a, nbytes, NULL, NULL);
 
 	while (nbytes) {
@@ -1329,7 +1327,6 @@ static void init_std_data(struct entropy_store *r)
 	ktime_t now = ktime_get_real();
 	unsigned long rv;
 
-	r->last_pulled = jiffies;
 	mix_pool_bytes(r, &now, sizeof(now), NULL);
 	for (i = r->poolinfo->poolbytes; i > 0; i -= sizeof(rv)) {
 		if (!arch_get_random_long(&rv))
@@ -1354,6 +1351,7 @@ static int rand_initialize(void)
 	init_std_data(&input_pool);
 	init_std_data(&_blocking_pool);
 	init_std_data(&_nonblocking_pool);
+	nonblocking_pool.last_pulled = jiffies;
 	return 0;
 }
 early_initcall(rand_initialize);
