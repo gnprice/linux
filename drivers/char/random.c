@@ -991,7 +991,7 @@ retry:
 		/* When a reseed drains the pool, we might as well suck up any
 		 * underestimated entropy as well as what we estimate is there. */
 		WARN_ON(credit_bits == NULL);
-		ibytes = max(ibytes, 2*EXTRACT_SIZE);
+		ibytes = max_t(size_t, ibytes, 2*EXTRACT_SIZE);
 	}
 	entropy_count = max_t(int, 0,
 			      entropy_count - (ibytes << (ENTROPY_SHIFT + 3)));
