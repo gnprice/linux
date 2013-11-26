@@ -1001,6 +1001,13 @@ retry:
 		ibytes = 0;
 	if (credit_bits != NULL)
 		*credit_bits = ibytes * 8;
+	if (dest != NULL && ibytes && ibytes == have_bytes) {
+		/* When a reseed drains the pool, we might as well
+		 * suck up any underestimated entropy as well as what
+		 * we estimate is there. */
+		WARN_ON(credit_bits == NULL);
+		ibytes = max_t(size_t, ibytes, 2*EXTRACT_SIZE);
+	}
 	entropy_count = max_t(int, 0,
 			      entropy_count - (ibytes << (ENTROPY_SHIFT + 3)));
 	if (cmpxchg(&r->entropy_count, orig, entropy_count) != orig)
