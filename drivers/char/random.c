@@ -410,7 +410,6 @@ static struct fasync_struct *fasync;
  *
  **********************************************************************/
 
-struct entropy_store;
 struct entropy_store {
 	/* read-only data: */
 	const struct poolinfo *poolinfo;
