@@ -411,6 +411,8 @@ static struct fasync_struct *fasync;
  **********************************************************************/
 
 struct entropy_account {
+	const struct poolinfo *poolinfo;
+	const char *name;
 	int entropy_count;
 	int entropy_total;
 	unsigned int initialized:1;
@@ -438,16 +440,21 @@ static __u32 input_pool_data[INPUT_POOL_WORDS];
 static __u32 blocking_pool_data[OUTPUT_POOL_WORDS];
 static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
 
+#define POOL_INIT(init...) init, .a = {init}
 static struct entropy_store input_pool = {
-	.poolinfo = &poolinfo_table[0],
-	.name = "input",
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[0],
+		.name = "input"
+		),
 	.lock = __SPIN_LOCK_UNLOCKED(input_pool.lock),
 	.pool = input_pool_data
 };
 
 static struct entropy_store blocking_pool = {
-	.poolinfo = &poolinfo_table[1],
-	.name = "blocking",
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[1],
+		.name = "blocking"
+		),
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 	.pool = blocking_pool_data,
 	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
@@ -455,8 +462,10 @@ static struct entropy_store blocking_pool = {
 };
 
 static struct entropy_store nonblocking_pool = {
-	.poolinfo = &poolinfo_table[1],
-	.name = "nonblocking",
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[1],
+		.name = "nonblocking"
+		),
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
 	.pool = nonblocking_pool_data,
 	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
