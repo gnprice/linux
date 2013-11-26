@@ -433,8 +433,6 @@ struct entropy_store {
 	spinlock_t lock;
 	unsigned short add_ptr;
 	unsigned short input_rotate;
-	unsigned int last_data_init:1;
-	__u8 last_data[EXTRACT_SIZE];
 };
 
 static void push_to_pool(struct work_struct *work);
@@ -879,16 +877,23 @@ void add_disk_randomness(struct gendisk *disk)
 struct generator {
 	struct entropy_account *a;
 	struct entropy_store *_store;
+
+	/* Lock-protected data: */
+	spinlock_t lock;
+	unsigned int last_data_init:1;
+	__u8 last_data[EXTRACT_SIZE];
 };
 
 static struct generator blocking_pool = {
 	._store = &_blocking_pool,
 	.a = &_blocking_pool.a,
+	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 };
 
 static struct generator nonblocking_pool = {
 	._store = &_nonblocking_pool,
 	.a = &_nonblocking_pool.a,
+	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
 };
 
 static void mix_generator_bytes(struct generator *gen, const void *in,
@@ -1133,13 +1138,9 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 /*
  * This function extracts randomness from the "entropy pool", and
  * returns it in a buffer.
- *
- * The 'dest' parameter identifies the pool the entropy is to be used for,
- * or is NULL if it's not to be used in another pool.
  */
-static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, struct entropy_account *dest,
-			       int *credit_bits)
+static ssize_t extract_entropy(struct generator *gen, void *buf,
+			       size_t nbytes)
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
@@ -1147,33 +1148,35 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 
 	/* if last_data isn't primed, we need EXTRACT_SIZE extra bytes */
 	if (fips_enabled) {
-		spin_lock_irqsave(&r->lock, flags);
-		if (!r->last_data_init) {
-			r->last_data_init = 1;
-			spin_unlock_irqrestore(&r->lock, flags);
-			trace_extract_entropy(r->name, EXTRACT_SIZE,
-					      ENTROPY_BITS(r), _RET_IP_);
-			xfer_secondary_pool(r, EXTRACT_SIZE);
-			extract_buf(r, tmp);
-			spin_lock_irqsave(&r->lock, flags);
-			memcpy(r->last_data, tmp, EXTRACT_SIZE);
+		spin_lock_irqsave(&gen->lock, flags);
+		if (!gen->last_data_init) {
+			gen->last_data_init = 1;
+			spin_unlock_irqrestore(&gen->lock, flags);
+			trace_extract_entropy(gen->a->name, EXTRACT_SIZE,
+					      ENTROPY_BITS_A(gen->a), _RET_IP_);
+			xfer_secondary_pool(gen->_store, EXTRACT_SIZE);
+			extract_generator(gen, tmp);
+
+			spin_lock_irqsave(&gen->lock, flags);
+			memcpy(gen->last_data, tmp, EXTRACT_SIZE);
 		}
-		spin_unlock_irqrestore(&r->lock, flags);
+		spin_unlock_irqrestore(&gen->lock, flags);
 	}
 
-	trace_extract_entropy(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
-	xfer_secondary_pool(r, nbytes);
-	nbytes = account(&r->a, nbytes, dest, credit_bits);
+	trace_extract_entropy(gen->a->name, nbytes,
+			      ENTROPY_BITS_A(gen->a), _RET_IP_);
+	xfer_secondary_pool(gen->_store, nbytes);
+	nbytes = account(gen->a, nbytes, NULL, NULL);
 
 	while (nbytes) {
-		extract_buf(r, tmp);
+		extract_generator(gen, tmp);
 
 		if (fips_enabled) {
-			spin_lock_irqsave(&r->lock, flags);
-			if (!memcmp(tmp, r->last_data, EXTRACT_SIZE))
+			spin_lock_irqsave(&gen->lock, flags);
+			if (!memcmp(tmp, gen->last_data, EXTRACT_SIZE))
 				panic("Hardware RNG duplicated output!\n");
-			memcpy(r->last_data, tmp, EXTRACT_SIZE);
-			spin_unlock_irqrestore(&r->lock, flags);
+			memcpy(gen->last_data, tmp, EXTRACT_SIZE);
+			spin_unlock_irqrestore(&gen->lock, flags);
 		}
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		memcpy(buf, tmp, i);
@@ -1274,7 +1277,7 @@ void get_random_bytes(void *buf, int nbytes)
 		       nonblocking_pool.a->entropy_total);
 #endif
 	trace_get_random_bytes(nbytes, _RET_IP_);
-	extract_entropy(&_nonblocking_pool, buf, nbytes, NULL, NULL);
+	extract_entropy(&nonblocking_pool, buf, nbytes);
 }
 EXPORT_SYMBOL(get_random_bytes);
 
@@ -1306,7 +1309,7 @@ void get_random_bytes_arch(void *buf, int nbytes)
 	}
 
 	if (nbytes)
-		extract_entropy(&_nonblocking_pool, p, nbytes, NULL, NULL);
+		extract_entropy(&nonblocking_pool, p, nbytes);
 }
 EXPORT_SYMBOL(get_random_bytes_arch);
 
