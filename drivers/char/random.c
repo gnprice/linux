@@ -411,6 +411,8 @@ static struct fasync_struct *fasync;
  **********************************************************************/
 
 struct entropy_account {
+	const struct poolinfo *poolinfo;
+	const char *name;
 	int entropy_count;
 	int entropy_total;
 	unsigned int initialized:1;
@@ -438,16 +440,21 @@ static __u32 input_pool_data[INPUT_POOL_WORDS];
 static __u32 blocking_pool_data[OUTPUT_POOL_WORDS];
 static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
 
+#define POOL_INIT(init...) init, .a = {init}
 static struct entropy_store input_pool = {
-	.poolinfo = &poolinfo_table[0],
-	.name = "input",
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[0],
+		.name = "input"
+		),
 	.lock = __SPIN_LOCK_UNLOCKED(input_pool.lock),
 	.pool = input_pool_data
 };
 
 static struct entropy_store blocking_pool = {
-	.poolinfo = &poolinfo_table[1],
-	.name = "blocking",
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[1],
+		.name = "blocking"
+		),
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 	.pool = blocking_pool_data,
 	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
@@ -455,8 +462,10 @@ static struct entropy_store blocking_pool = {
 };
 
 static struct entropy_store nonblocking_pool = {
-	.poolinfo = &poolinfo_table[1],
-	.name = "nonblocking",
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[1],
+		.name = "nonblocking"
+		),
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
 	.pool = nonblocking_pool_data,
 	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
@@ -589,17 +598,17 @@ static void maybe_push_entropy(int entropy_bits);
  * Use credit_entropy_bits_safe() if the value comes from userspace
  * or otherwise should be checked for extreme values.
  */
-static void credit_entropy_bits(struct entropy_store *r, int nbits)
+static void credit_entropy_bits(struct entropy_account *acct, int nbits)
 {
 	int entropy_count, orig;
-	const int pool_size = r->poolinfo->poolfracbits;
+	const int pool_size = acct->poolinfo->poolfracbits;
 	int nfrac = nbits << ENTROPY_SHIFT;
 
 	if (!nbits)
 		return;
 
 retry:
-	entropy_count = orig = ACCESS_ONCE(r->a.entropy_count);
+	entropy_count = orig = ACCESS_ONCE(acct->entropy_count);
 	if (nfrac < 0) {
 		/* Debit */
 		entropy_count += nfrac;
@@ -626,7 +635,7 @@ retry:
 		 * turns no matter how large nbits is.
 		 */
 		int pnfrac = nfrac;
-		const int s = r->poolinfo->poolbitshift + ENTROPY_SHIFT + 2;
+		const int s = acct->poolinfo->poolbitshift + ENTROPY_SHIFT + 2;
 		/* The +2 corresponds to the /4 in the denominator */
 
 		do {
@@ -641,29 +650,29 @@ retry:
 
 	if (entropy_count < 0) {
 		pr_warn("random: negative entropy/overflow: pool %s count %d\n",
-			r->name, entropy_count);
+			acct->name, entropy_count);
 		WARN_ON(1);
 		entropy_count = 0;
 	} else if (entropy_count > pool_size)
 		entropy_count = pool_size;
-	if (cmpxchg(&r->a.entropy_count, orig, entropy_count) != orig)
+	if (cmpxchg(&acct->entropy_count, orig, entropy_count) != orig)
 		goto retry;
 
-	r->a.entropy_total += nbits;
-	if (!r->a.initialized && r->a.entropy_total > 128) {
-		r->a.initialized = 1;
-		r->a.entropy_total = 0;
-		if (r == &nonblocking_pool) {
+	acct->entropy_total += nbits;
+	if (!acct->initialized && acct->entropy_total > 128) {
+		acct->initialized = 1;
+		acct->entropy_total = 0;
+		if (acct == &nonblocking_pool.a) {
 			prandom_reseed_late();
-			pr_notice("random: %s pool is initialized\n", r->name);
+			pr_notice("random: %s pool is initialized\n", acct->name);
 		}
 	}
 
-	trace_credit_entropy_bits(r->name, nbits,
+	trace_credit_entropy_bits(acct->name, nbits,
 				  entropy_count >> ENTROPY_SHIFT,
-				  r->a.entropy_total, _RET_IP_);
+				  acct->entropy_total, _RET_IP_);
 
-	if (r == &input_pool) {
+	if (acct == &input_pool.a) {
 		int entropy_bits = entropy_count >> ENTROPY_SHIFT;
 
 		/* should we wake readers? */
@@ -676,7 +685,7 @@ retry:
 	}
 }
 
-static void credit_entropy_bits_safe(struct entropy_store *r, int nbits)
+static void credit_entropy_bits_safe(struct entropy_account *acct, int nbits)
 {
 	const int nbits_max = (int)(~0U >> (ENTROPY_SHIFT + 1));
 
@@ -684,7 +693,7 @@ static void credit_entropy_bits_safe(struct entropy_store *r, int nbits)
 	nbits = min(nbits,  nbits_max);
 	nbits = max(nbits, -nbits_max);
 
-	credit_entropy_bits(r, nbits);
+	credit_entropy_bits(acct, nbits);
 }
 
 /*********************************************************************
@@ -783,7 +792,7 @@ static void add_timer_randomness(struct timer_rand_state *state, unsigned num)
 		 * Round down by 1 bit on general principles,
 		 * and limit entropy entimate to 12 bits.
 		 */
-		credit_entropy_bits(&input_pool, min_t(int, fls(delta>>1), 11));
+		credit_entropy_bits(&input_pool.a, min_t(int, fls(delta>>1), 11));
 	}
 	preempt_enable();
 }
@@ -844,7 +853,7 @@ void add_interrupt_randomness(int irq, int irq_flags)
 		} else
 			fast_pool->last_timer_intr = 0;
 	}
-	credit_entropy_bits(&input_pool, 1);
+	credit_entropy_bits(&input_pool.a, 1);
 }
 
 #ifdef CONFIG_BLOCK
@@ -865,7 +874,7 @@ void add_disk_randomness(struct gendisk *disk)
  *********************************************************************/
 
 static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, struct entropy_store *dest,
+			       size_t nbytes, struct entropy_account *dest,
 	                       int *credit_bits);
 
 /*
@@ -891,24 +900,24 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 		_xfer_secondary_pool(r, nbytes);
 }
 
-static void account_xfer(struct entropy_store *dest, int nbytes,
+static void account_xfer(struct entropy_account *dest, int nbytes,
 			 int *min_bytes, int *reserved_bytes)
 {
 	/* Try to pull a full wakeup's worth if we might have just woken up
 	 * for it, and a full reseed's worth (which is controlled by the same
 	 * parameter) for the nonblocking pool... */
-	if (dest == &blocking_pool || dest->a.initialized) {
+	if (dest == &blocking_pool.a || dest->initialized) {
 		*min_bytes = random_read_wakeup_bits / 8;
 	} else {
 		/* ... except if we're hardly seeded at all, we'll settle for
 		 * enough to double what we have. */
 		*min_bytes = min(random_read_wakeup_bits / 8,
-				 (dest->a.entropy_total+7) / 8);
+				 (dest->entropy_total+7) / 8);
 	}
 
 	/* Reserve some for /dev/random's pool, unless we really need it. */
 	*reserved_bytes = 0;
-	if (dest == &nonblocking_pool && dest->a.initialized) {
+	if (dest == &nonblocking_pool.a && dest->initialized) {
 		*reserved_bytes = 2 * (random_read_wakeup_bits / 8);
 	}
 }
@@ -921,9 +930,9 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	bytes = min_t(int, nbytes, sizeof(tmp));
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(&input_pool));
-	bytes = extract_entropy(&input_pool, tmp, bytes, r, &credit_bits);
+	bytes = extract_entropy(&input_pool, tmp, bytes, &r->a, &credit_bits);
 	mix_pool_bytes(r, tmp, bytes);
-	credit_entropy_bits(r, credit_bits);
+	credit_entropy_bits(&r->a, credit_bits);
 }
 
 /*
@@ -958,10 +967,10 @@ static void maybe_push_entropy(int entropy_bits)
 		if (last == &blocking_pool)
 			other = &nonblocking_pool;
 		if (other->a.entropy_count <=
-		    3 * other->poolinfo->poolfracbits / 4)
+		    3 * other->a.poolinfo->poolfracbits / 4)
 			last = other;
 		if (last->a.entropy_count <=
-		    3 * last->poolinfo->poolfracbits / 4) {
+		    3 * last->a.poolinfo->poolfracbits / 4) {
 			schedule_work(&last->push_work);
 			input_pool.a.entropy_total = 0;
 		}
@@ -972,8 +981,8 @@ static void maybe_push_entropy(int entropy_bits)
  * This function decides how many bytes to actually take from the
  * given pool, and also debits the entropy count accordingly.
  */
-static size_t account(struct entropy_store *r, size_t nbytes,
-		      struct entropy_store *dest, int *credit_bits)
+static size_t account(struct entropy_account *acct, size_t nbytes,
+		      struct entropy_account *dest, int *credit_bits)
 {
 	int have_bytes, min, reserved;
 	int entropy_count, orig;
@@ -983,15 +992,15 @@ static size_t account(struct entropy_store *r, size_t nbytes,
 	if (dest != NULL)
 		account_xfer(dest, nbytes, &min, &reserved);
 
-	BUG_ON(r->a.entropy_count > r->poolinfo->poolfracbits);
+	BUG_ON(acct->entropy_count > acct->poolinfo->poolfracbits);
 
 	/* Can we pull enough? */
 retry:
-	entropy_count = orig = ACCESS_ONCE(r->a.entropy_count);
+	entropy_count = orig = ACCESS_ONCE(acct->entropy_count);
 	have_bytes = entropy_count >> (ENTROPY_SHIFT + 3);
 	ibytes = nbytes;
 	/* On the input pool and /dev/random, never pull more than available */
-	if (r != &nonblocking_pool)
+	if (acct != &nonblocking_pool.a)
 		ibytes = min_t(size_t, ibytes, have_bytes - reserved);
 	if (ibytes < min)
 		ibytes = 0;
@@ -1005,12 +1014,12 @@ retry:
 	}
 	entropy_count = max_t(int, 0,
 			      entropy_count - (ibytes << (ENTROPY_SHIFT + 3)));
-	if (ibytes && cmpxchg(&r->a.entropy_count, orig, entropy_count) != orig)
+	if (ibytes && cmpxchg(&acct->entropy_count, orig, entropy_count) != orig)
 		goto retry;
 
-	trace_debit_entropy(r->name, 8 * ibytes);
+	trace_debit_entropy(acct->name, 8 * ibytes);
 	if (ibytes &&
-	    (r->a.entropy_count >> ENTROPY_SHIFT) < random_write_wakeup_bits) {
+	    (acct->entropy_count >> ENTROPY_SHIFT) < random_write_wakeup_bits) {
 		wake_up_interruptible(&random_write_wait);
 		kill_fasync(&fasync, SIGIO, POLL_OUT);
 	}
@@ -1093,7 +1102,7 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
  * or is NULL if it's not to be used in another pool.
  */
 static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, struct entropy_store *dest,
+			       size_t nbytes, struct entropy_account *dest,
 			       int *credit_bits)
 {
 	ssize_t ret = 0, i;
@@ -1118,7 +1127,7 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 
 	trace_extract_entropy(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
-	nbytes = account(r, nbytes, dest, credit_bits);
+	nbytes = account(&r->a, nbytes, dest, credit_bits);
 
 	while (nbytes) {
 		extract_buf(r, tmp);
@@ -1155,7 +1164,7 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 
 	trace_extract_entropy_user(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
-	nbytes = account(r, nbytes, NULL, NULL);
+	nbytes = account(&r->a, nbytes, NULL, NULL);
 
 	while (nbytes) {
 		if (need_resched()) {
@@ -1418,7 +1427,7 @@ static long random_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			return -EPERM;
 		if (get_user(ent_count, p))
 			return -EFAULT;
-		credit_entropy_bits_safe(&input_pool, ent_count);
+		credit_entropy_bits_safe(&input_pool.a, ent_count);
 		return 0;
 	case RNDADDENTROPY:
 		if (!capable(CAP_SYS_ADMIN))
@@ -1433,7 +1442,7 @@ static long random_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 				    size);
 		if (retval < 0)
 			return retval;
-		credit_entropy_bits_safe(&input_pool, ent_count);
+		credit_entropy_bits_safe(&input_pool.a, ent_count);
 		return 0;
 	case RNDZAPENTCNT:
 	case RNDCLEARPOOL:
