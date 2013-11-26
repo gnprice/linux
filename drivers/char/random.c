@@ -907,7 +907,7 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes);
 static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
-	if (r->limit == 0 && random_min_urandom_seed) {
+	if (r->limit == 0 && r->initialized && random_min_urandom_seed) {
 		unsigned long now = jiffies;
 
 		if (time_before(now,
