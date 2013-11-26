@@ -579,6 +579,8 @@ static void fast_mix(struct fast_pool *f, __u32 input[4])
 	f->count++;
 }
 
+static void maybe_push_entropy(int entropy_bits);
+
 /*
  * Credit (or debit) the entropy store with n bits of entropy.
  * Use credit_entropy_bits_safe() if the value comes from userspace
@@ -666,28 +668,8 @@ retry:
 			wake_up_interruptible(&random_read_wait);
 			kill_fasync(&fasync, SIGIO, POLL_IN);
 		}
-		/* If the input pool is getting full, send some
-		 * entropy to the two output pools, flipping back and
-		 * forth between them, until the output pools are 75%
-		 * full.
-		 */
-		if (entropy_bits > random_write_wakeup_bits &&
-		    r->initialized &&
-		    r->entropy_total >= 2*random_read_wakeup_bits) {
-			static struct entropy_store *last = &blocking_pool;
-			struct entropy_store *other = &blocking_pool;
 
-			if (last == &blocking_pool)
-				other = &nonblocking_pool;
-			if (other->entropy_count <=
-			    3 * other->poolinfo->poolfracbits / 4)
-				last = other;
-			if (last->entropy_count <=
-			    3 * last->poolinfo->poolfracbits / 4) {
-				schedule_work(&last->push_work);
-				r->entropy_total = 0;
-			}
-		}
+		maybe_push_entropy(entropy_bits);
 	}
 }
 
@@ -955,6 +937,32 @@ static void push_to_pool(struct work_struct *work)
 	_xfer_secondary_pool(r, random_read_wakeup_bits/8);
 	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
 			   input_pool.entropy_count >> ENTROPY_SHIFT);
+}
+
+/* If the input pool is getting full, send some entropy to the two
+ * output pools.  entropy_bits is the quantity of estimated entropy we
+ * just reached in the input pool. */
+static void maybe_push_entropy(int entropy_bits)
+{
+	if (entropy_bits > random_write_wakeup_bits &&
+	    input_pool.initialized &&
+	    input_pool.entropy_total >= 2*random_read_wakeup_bits) {
+		/* Flip back and forth between the output pools, until
+		 * they are 75% full. */
+		static struct entropy_store *last = &blocking_pool;
+		struct entropy_store *other = &blocking_pool;
+
+		if (last == &blocking_pool)
+			other = &nonblocking_pool;
+		if (other->entropy_count <=
+		    3 * other->poolinfo->poolfracbits / 4)
+			last = other;
+		if (last->entropy_count <=
+		    3 * last->poolinfo->poolfracbits / 4) {
+			schedule_work(&last->push_work);
+			input_pool.entropy_total = 0;
+		}
+	}
 }
 
 /*
