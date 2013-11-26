@@ -896,7 +896,8 @@ void add_disk_randomness(struct gendisk *disk)
  *********************************************************************/
 
 static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, struct entropy_store *dest);
+			       size_t nbytes, struct entropy_store *dest,
+	                       int *credit_bits);
 
 /*
  * This utility inline function is responsible for transferring
@@ -945,14 +946,14 @@ static void account_xfer(struct entropy_store *dest, int nbytes,
 static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 {
 	__u32 tmp[OUTPUT_POOL_WORDS];
-	int bytes;
+	int bytes, credit_bits;
 
 	bytes = min_t(int, nbytes, sizeof(tmp));
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(r->pull));
-	bytes = extract_entropy(r->pull, tmp, bytes, r);
+	bytes = extract_entropy(r->pull, tmp, bytes, r, &credit_bits);
 	mix_pool_bytes(r, tmp, bytes, NULL);
-	credit_entropy_bits(r, bytes*8);
+	credit_entropy_bits(r, credit_bits);
 }
 
 /*
@@ -976,7 +977,7 @@ static void push_to_pool(struct work_struct *work)
  * given pool, and also debits the entropy count accordingly.
  */
 static size_t account(struct entropy_store *r, size_t nbytes,
-		      struct entropy_store *dest)
+		      struct entropy_store *dest, int *credit_bits)
 {
 	int have_bytes, min, reserved;
 	int entropy_count, orig;
@@ -998,6 +999,8 @@ retry:
 		ibytes = min_t(size_t, ibytes, have_bytes - reserved);
 	if (ibytes < min)
 		ibytes = 0;
+	if (credit_bits != NULL)
+		*credit_bits = ibytes * 8;
 	entropy_count = max_t(int, 0,
 			      entropy_count - (ibytes << (ENTROPY_SHIFT + 3)));
 	if (ibytes && cmpxchg(&r->entropy_count, orig, entropy_count) != orig)
@@ -1088,7 +1091,8 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
  * or is NULL if it's not to be used in another pool.
  */
 static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, struct entropy_store *dest)
+			       size_t nbytes, struct entropy_store *dest,
+			       int *credit_bits)
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
@@ -1112,7 +1116,7 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 
 	trace_extract_entropy(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
-	nbytes = account(r, nbytes, dest);
+	nbytes = account(r, nbytes, dest, credit_bits);
 
 	while (nbytes) {
 		extract_buf(r, tmp);
@@ -1149,7 +1153,7 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 
 	trace_extract_entropy_user(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
-	nbytes = account(r, nbytes, NULL);
+	nbytes = account(r, nbytes, NULL, NULL);
 
 	while (nbytes) {
 		if (need_resched()) {
@@ -1196,7 +1200,7 @@ void get_random_bytes(void *buf, int nbytes)
 		       nonblocking_pool.entropy_total);
 #endif
 	trace_get_random_bytes(nbytes, _RET_IP_);
-	extract_entropy(&nonblocking_pool, buf, nbytes, NULL);
+	extract_entropy(&nonblocking_pool, buf, nbytes, NULL, NULL);
 }
 EXPORT_SYMBOL(get_random_bytes);
 
@@ -1228,7 +1232,7 @@ void get_random_bytes_arch(void *buf, int nbytes)
 	}
 
 	if (nbytes)
-		extract_entropy(&nonblocking_pool, p, nbytes, NULL);
+		extract_entropy(&nonblocking_pool, p, nbytes, NULL, NULL);
 }
 EXPORT_SYMBOL(get_random_bytes_arch);
 
