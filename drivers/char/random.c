@@ -290,6 +290,7 @@
  */
 #define ENTROPY_SHIFT 3
 #define ENTROPY_BITS(r) ((r)->a.entropy_count >> ENTROPY_SHIFT)
+#define ENTROPY_BITS_A(acct) ((acct)->entropy_count >> ENTROPY_SHIFT)
 
 /*
  * The minimum number of bits of entropy before we wake up a read on
@@ -877,18 +878,30 @@ void add_disk_randomness(struct gendisk *disk)
 
 struct generator {
 	struct entropy_account *a;
-	struct entropy_store *r;
+	struct entropy_store *_store;
 };
 
 static struct generator blocking_pool = {
-	.r = &_blocking_pool,
+	._store = &_blocking_pool,
 	.a = &_blocking_pool.a,
 };
 
 static struct generator nonblocking_pool = {
-	.r = &_nonblocking_pool,
+	._store = &_nonblocking_pool,
 	.a = &_nonblocking_pool.a,
 };
+
+static void mix_generator_bytes(struct generator *gen, const void *in,
+				int nbytes)
+{
+	mix_pool_bytes(gen->_store, in, nbytes, NULL);
+}
+
+static void extract_buf(struct entropy_store *r, __u8 *out);
+static void extract_generator(struct generator *gen, __u8 *out)
+{
+	extract_buf(gen->_store, out);
+}
 
 /*********************************************************************
  *
@@ -896,9 +909,9 @@ static struct generator nonblocking_pool = {
  *
  *********************************************************************/
 
-static ssize_t extract_entropy(struct entropy_store *r, void *buf,
-			       size_t nbytes, struct entropy_account *dest,
-	                       int *credit_bits);
+static ssize_t extract_entropy_xfer(void *buf, size_t nbytes,
+				    struct entropy_account *dest,
+				    int *credit_bits);
 
 /*
  * This utility inline function is responsible for transferring
@@ -954,7 +967,7 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	bytes = min_t(int, nbytes, sizeof(tmp));
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(&input_pool));
-	bytes = extract_entropy(&input_pool, tmp, bytes, &r->a, &credit_bits);
+	bytes = extract_entropy_xfer(tmp, bytes, &r->a, &credit_bits);
 	mix_pool_bytes(r, tmp, bytes, NULL);
 	credit_entropy_bits(&r->a, credit_bits);
 }
@@ -1052,8 +1065,7 @@ retry:
 }
 
 /*
- * This function does the actual extraction for extract_entropy and
- * extract_entropy_user.
+ * This function does the actual extraction for the extract_entropy family.
  *
  * Note: we assume that .poolwords is a multiple of 16 words.
  */
@@ -1176,19 +1188,46 @@ static ssize_t extract_entropy(struct entropy_store *r, void *buf,
 	return ret;
 }
 
+static ssize_t extract_entropy_xfer(void *buf, size_t nbytes,
+				    struct entropy_account *dest,
+				    int *credit_bits)
+{
+	ssize_t ret = 0, i;
+	__u8 tmp[EXTRACT_SIZE];
+
+	trace_extract_entropy(input_pool.name, nbytes,
+			      ENTROPY_BITS(&input_pool), _RET_IP_);
+	nbytes = account(&input_pool.a, nbytes, dest, credit_bits);
+
+	while (nbytes) {
+		extract_buf(&input_pool, tmp);
+		i = min_t(int, nbytes, EXTRACT_SIZE);
+		memcpy(buf, tmp, i);
+		nbytes -= i;
+		buf += i;
+		ret += i;
+	}
+
+	/* Wipe data just returned from memory */
+	memset(tmp, 0, sizeof(tmp));
+
+	return ret;
+}
+
 /*
  * This function extracts randomness from the "entropy pool", and
  * returns it in a userspace buffer.
  */
-static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
+static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 				    size_t nbytes)
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
 
-	trace_extract_entropy_user(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
-	xfer_secondary_pool(r, nbytes);
-	nbytes = account(&r->a, nbytes, NULL, NULL);
+	trace_extract_entropy_user(gen->a->name, nbytes,
+				   ENTROPY_BITS_A(gen->a), _RET_IP_);
+	xfer_secondary_pool(gen->_store, nbytes);
+	nbytes = account(gen->a, nbytes, NULL, NULL);
 
 	while (nbytes) {
 		if (need_resched()) {
@@ -1200,7 +1239,7 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 			schedule();
 		}
 
-		extract_buf(r, tmp);
+		extract_generator(gen, tmp);
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		if (copy_to_user(buf, tmp, i)) {
 			ret = -EFAULT;
@@ -1343,7 +1382,7 @@ random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 
 	nbytes = min_t(size_t, nbytes, SEC_XFER_SIZE);
 	while (1) {
-		n = extract_entropy_user(&_blocking_pool, buf, nbytes);
+		n = extract_entropy_user(&blocking_pool, buf, nbytes);
 		if (n < 0)
 			return n;
 		trace_random_read(n*8, (nbytes-n)*8,
@@ -1374,7 +1413,7 @@ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 			    "with %d bits of entropy available\n",
 			    current->comm, nonblocking_pool.a->entropy_total);
 
-	ret = extract_entropy_user(&_nonblocking_pool, buf, nbytes);
+	ret = extract_entropy_user(&nonblocking_pool, buf, nbytes);
 
 	trace_urandom_read(8 * nbytes, ENTROPY_BITS(&_nonblocking_pool),
 			   ENTROPY_BITS(&input_pool));
