@@ -856,8 +856,9 @@ void add_disk_randomness(struct gendisk *disk)
 static void push_to_pool(struct work_struct *work);
 
 struct generator {
+	unsigned long state;
+
 	struct entropy_account *a;
-	struct entropy_store *_store;
 	const char *name;
 	unsigned long last_pulled;
 	struct work_struct push_work;
@@ -878,7 +879,6 @@ static struct entropy_store _blocking_pool = {
 };
 
 static struct generator blocking_pool = {
-	._store = &_blocking_pool,
 	.a = &_blocking_pool.a,
 	.name = "blocking",
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
@@ -896,7 +896,6 @@ static struct entropy_store _nonblocking_pool = {
 };
 
 static struct generator nonblocking_pool = {
-	._store = &_nonblocking_pool,
 	.a = &_nonblocking_pool.a,
 	.name = "nonblocking",
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
@@ -909,13 +908,18 @@ struct entropy_account *_nonblocking_account = &_nonblocking_pool.a;
 static void mix_generator_bytes(struct generator *gen, const void *in,
 				int nbytes)
 {
-	mix_pool_bytes(gen->_store, in, nbytes);
 }
 
-static void extract_buf(struct entropy_store *r, __u8 *out);
 static void extract_generator(struct generator *gen, __u8 *out)
 {
-	extract_buf(gen->_store, out);
+	unsigned long l[LONGS(EXTRACT_SIZE)];
+	int i;
+
+	for (i = 0; i < sizeof(l)/sizeof(l[0]); i++)
+		l[i] = gen->state++;
+
+	memcpy(out, l, EXTRACT_SIZE);
+	memset(l, 0, sizeof(l));
 }
 
 /*********************************************************************
