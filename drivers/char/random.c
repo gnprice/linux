@@ -872,6 +872,7 @@ static void push_to_pool(struct work_struct *work);
 struct generator {
 	struct entropy_account *a;
 	struct entropy_store *_store;
+	const char *name;
 	unsigned long last_pulled;
 	struct work_struct push_work;
 
@@ -884,6 +885,7 @@ struct generator {
 static struct generator blocking_pool = {
 	._store = &_blocking_pool,
 	.a = &_blocking_pool.a,
+	.name = "blocking",
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
 					push_to_pool),
@@ -892,6 +894,7 @@ static struct generator blocking_pool = {
 static struct generator nonblocking_pool = {
 	._store = &_nonblocking_pool,
 	.a = &_nonblocking_pool.a,
+	.name = "nonblocking",
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
 	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
 					push_to_pool),
@@ -968,7 +971,7 @@ static void _xfer_secondary_pool(struct generator *gen, size_t nbytes)
 	int bytes, credit_bits;
 
 	bytes = min_t(int, nbytes, sizeof(tmp));
-	trace_xfer_secondary_pool(gen->a->name, bytes * 8, nbytes * 8,
+	trace_xfer_secondary_pool(gen->name, bytes * 8, nbytes * 8,
 			ENTROPY_BITS_A(gen->a), ENTROPY_BITS(&input_pool));
 	bytes = extract_entropy_xfer(tmp, bytes, gen->a, &credit_bits);
 	mix_generator_bytes(gen, tmp, bytes);
@@ -987,7 +990,7 @@ static void push_to_pool(struct work_struct *work)
 					      push_work);
 	BUG_ON(!gen);
 	_xfer_secondary_pool(gen, random_read_wakeup_bits/8);
-	trace_push_to_pool(gen->a->name, gen->a->entropy_count >> ENTROPY_SHIFT,
+	trace_push_to_pool(gen->name, gen->a->entropy_count >> ENTROPY_SHIFT,
 			   input_pool.a.entropy_count >> ENTROPY_SHIFT);
 }
 
@@ -1150,7 +1153,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 		if (!gen->last_data_init) {
 			gen->last_data_init = 1;
 			spin_unlock_irqrestore(&gen->lock, flags);
-			trace_extract_entropy(gen->a->name, EXTRACT_SIZE,
+			trace_extract_entropy(gen->name, EXTRACT_SIZE,
 					      ENTROPY_BITS_A(gen->a), _RET_IP_);
 			xfer_secondary_pool(gen, EXTRACT_SIZE);
 			extract_generator(gen, tmp);
@@ -1161,7 +1164,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 		spin_unlock_irqrestore(&gen->lock, flags);
 	}
 
-	trace_extract_entropy(gen->a->name, nbytes,
+	trace_extract_entropy(gen->name, nbytes,
 			      ENTROPY_BITS_A(gen->a), _RET_IP_);
 	xfer_secondary_pool(gen, nbytes);
 	nbytes = account(gen->a, nbytes, NULL, NULL);
@@ -1225,7 +1228,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
 
-	trace_extract_entropy_user(gen->a->name, nbytes,
+	trace_extract_entropy_user(gen->name, nbytes,
 				   ENTROPY_BITS_A(gen->a), _RET_IP_);
 	xfer_secondary_pool(gen, nbytes);
 	nbytes = account(gen->a, nbytes, NULL, NULL);
