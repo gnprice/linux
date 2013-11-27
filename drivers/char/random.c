@@ -1387,7 +1387,7 @@ random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 		if (n < 0)
 			return n;
 		trace_random_read(n*8, (nbytes-n)*8,
-				  ENTROPY_BITS(&_blocking_pool),
+				  ENTROPY_BITS_A(blocking_pool.a),
 				  ENTROPY_BITS(&input_pool));
 		if (n > 0)
 			return n;
@@ -1416,7 +1416,7 @@ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 
 	ret = extract_entropy_user(&nonblocking_pool, buf, nbytes);
 
-	trace_urandom_read(8 * nbytes, ENTROPY_BITS(&_nonblocking_pool),
+	trace_urandom_read(8 * nbytes, ENTROPY_BITS_A(nonblocking_pool.a),
 			   ENTROPY_BITS(&input_pool));
 	return ret;
 }
