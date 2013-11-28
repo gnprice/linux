@@ -7,13 +7,12 @@
  * All code by those authors in this file is in the public domain.
  */
 
+#include <linux/bitops.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <asm/byteorder.h>
 
 #define MK_64(hi32, lo32)  ((lo32) + (((uint64_t) (hi32)) << 32))
-
-#define RotL_64(x, N)    (((x) << (N)) | ((x) >> (64-(N))))
 
 #define SKEIN_VERSION           (1)
 #define SKEIN_ID_STRING_LE      (0x33414853)
@@ -95,11 +94,11 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 
 		blkPtr += 64;
 
-#define R512(p0, p1, p2, p3, p4, p5, p6, p7, ROT, rNum) do {             \
-	X##p0 += X##p1; X##p1 = RotL_64(X##p1, ROT##_0); X##p1 ^= X##p0; \
-	X##p2 += X##p3; X##p3 = RotL_64(X##p3, ROT##_1); X##p3 ^= X##p2; \
-	X##p4 += X##p5; X##p5 = RotL_64(X##p5, ROT##_2); X##p5 ^= X##p4; \
-	X##p6 += X##p7; X##p7 = RotL_64(X##p7, ROT##_3); X##p7 ^= X##p6; \
+#define R512(p0, p1, p2, p3, p4, p5, p6, p7, ROT, rNum) do {           \
+	X##p0 += X##p1; X##p1 = rol64(X##p1, ROT##_0); X##p1 ^= X##p0; \
+	X##p2 += X##p3; X##p3 = rol64(X##p3, ROT##_1); X##p3 ^= X##p2; \
+	X##p4 += X##p5; X##p5 = rol64(X##p5, ROT##_2); X##p5 ^= X##p4; \
+	X##p6 += X##p7; X##p7 = rol64(X##p7, ROT##_3); X##p7 ^= X##p6; \
 		} while (0)
 
 #define I512(R) do {                                                    \
