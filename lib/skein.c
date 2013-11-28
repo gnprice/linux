@@ -9,6 +9,7 @@
 
 #include <linux/string.h>
 #include <linux/types.h>
+#include <asm/byteorder.h>
 
 #define MK_64(hi32, lo32)  ((lo32) + (((uint64_t) (hi32)) << 32))
 
@@ -18,7 +19,6 @@
 #define SKEIN_ID_STRING_LE      (0x33414853)
 #define SKEIN_SCHEMA_VER        MK_64(SKEIN_VERSION, SKEIN_ID_STRING_LE)
 #define SKEIN_KS_PARITY         MK_64(0x1BD11BDA, 0xA9FC1A22)
-#define SKEIN_BLOCK_BYTES       64
 
 static const uint64_t IV[] = {
 	MK_64(0x4903ADFF, 0x749C51CE),
@@ -30,33 +30,6 @@ static const uint64_t IV[] = {
 	MK_64(0x991112C7, 0x1A75B523),
 	MK_64(0xAE18A40B, 0x660FCC33)
 };
-
-static void Skein_Get64_LSB_First(uint64_t *dst,
-				  const uint8_t *src,
-				  size_t wCnt)
-{
-	size_t n;
-
-	for (n = 0; n < 8*wCnt; n += 8)
-		dst[n/8] =  ((uint64_t) src[n]) +
-			   (((uint64_t) src[n+1]) <<  8) +
-			   (((uint64_t) src[n+2]) << 16) +
-			   (((uint64_t) src[n+3]) << 24) +
-			   (((uint64_t) src[n+4]) << 32) +
-			   (((uint64_t) src[n+5]) << 40) +
-			   (((uint64_t) src[n+6]) << 48) +
-			   (((uint64_t) src[n+7]) << 56);
-}
-
-static void Skein_Put64_LSB_First(uint8_t *dst,
-				  const uint64_t *src,
-				  size_t bCnt)
-{
-	size_t n;
-
-	for (n = 0; n < bCnt; n++)
-		dst[n] = (uint8_t) (src[n>>3] >> (8 * (n&7)));
-}
 
 enum {
 	R_512_0_0 = 46, R_512_0_1 = 36, R_512_0_2 = 19, R_512_0_3 = 37,
@@ -88,6 +61,7 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 	uint64_t  kw[12];       /* key schedule words : chaining vars + tweak */
 	uint64_t  X0, X1, X2, X3, X4, X5, X6, X7;  /* local copies, for speed */
 	uint64_t  w[8];                          /* local copy of input block */
+	int i;
 
 	ts[0] = ctx->T[0];
 	ts[1] = ctx->T[1];
@@ -107,7 +81,8 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 
 		ts[2] = ts[0] ^ ts[1];
 
-		Skein_Get64_LSB_First(w, blkPtr, 8);
+		for (i = 0; i < 8; i++)
+			w[i] = le64_to_cpu(((uint64_t *)blkPtr)[i]);
 
 		X0   = w[0] + ks[0];
 		X1   = w[1] + ks[1];
@@ -182,6 +157,7 @@ int skein_hash(unsigned char *out,
 	       unsigned long long inlen)
 {
 	struct Skein_512_Ctxt ctx;
+	int i;
 
 	memcpy(ctx.X, IV, sizeof(ctx.X));
 	ctx.T[0] = 0;
@@ -204,7 +180,8 @@ int skein_hash(unsigned char *out,
 	ctx.T[0] = 0;
 	ctx.T[1] = ((uint64_t) 255) << 56;
 	Skein_512_Process_Block(&ctx, ctx.b, 1, sizeof(uint64_t));
-	Skein_Put64_LSB_First(out, ctx.X, SKEIN_BLOCK_BYTES);
+	for (i = 0; i < 8; i++)
+		((uint64_t *)out)[i] = cpu_to_le64(ctx.X[i]);
 
 	return 0;
 }
