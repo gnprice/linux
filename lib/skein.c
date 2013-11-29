@@ -162,6 +162,23 @@ void skein_ubi(const uint64_t *key,
 		out[i] ^= le64_to_cpu(((uint64_t *)buf)[i]);
 }
 
+void skein_output(const uint64_t *state,
+		  uint8_t *out,
+		  int out_blocks)
+{
+	uint64_t tweak_low, tweak_high;
+	uint8_t buf[8];
+	int block;
+
+	tweak_low = 0;
+	tweak_high = ((uint64_t) 63) << 56;
+	for (block = 0; block < out_blocks; block++) {
+		*(uint64_t *)buf = cpu_to_le64(block);
+		skein_ubi(state, tweak_low, tweak_high, buf, 8, out);
+		out += 64;
+	}
+}
+
 int skein_hash(unsigned char *out,
 	       const unsigned char *in,
 	       unsigned long long inlen)
@@ -177,9 +194,7 @@ int skein_hash(unsigned char *out,
 	tweak_high = ((uint64_t) 48) << 56;
 	skein_ubi(state, tweak_low, tweak_high, in, inlen, state);
 
-	tweak_high = ((uint64_t) 63) << 56;
-	memset(buf, 0, sizeof(buf));
-	skein_ubi(state, tweak_low, tweak_high, buf, 8, state);
+	skein_output(state, state, 1);
 
 	for (i = 0; i < 8; i++)
 		((uint64_t *)out)[i] = cpu_to_le64(state[i]);
