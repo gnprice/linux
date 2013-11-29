@@ -62,38 +62,38 @@ static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
 
 	ts[0] = ctx->T[0];
 	ts[1] = ctx->T[1];
-        {
-		ks[0] = ctx->X[0];
-		ks[1] = ctx->X[1];
-		ks[2] = ctx->X[2];
-		ks[3] = ctx->X[3];
-		ks[4] = ctx->X[4];
-		ks[5] = ctx->X[5];
-		ks[6] = ctx->X[6];
-		ks[7] = ctx->X[7];
-		ks[8] = ks[0] ^ ks[1] ^ ks[2] ^ ks[3] ^
-			ks[4] ^ ks[5] ^ ks[6] ^ ks[7] ^ SKEIN_KS_PARITY;
 
-		ts[2] = ts[0] ^ ts[1];
+	ks[0] = ctx->X[0];
+	ks[1] = ctx->X[1];
+	ks[2] = ctx->X[2];
+	ks[3] = ctx->X[3];
+	ks[4] = ctx->X[4];
+	ks[5] = ctx->X[5];
+	ks[6] = ctx->X[6];
+	ks[7] = ctx->X[7];
+	ks[8] = ks[0] ^ ks[1] ^ ks[2] ^ ks[3] ^
+		ks[4] ^ ks[5] ^ ks[6] ^ ks[7] ^ SKEIN_KS_PARITY;
 
-		for (i = 0; i < 8; i++)
-			w[i] = le64_to_cpu(((uint64_t *)block)[i]);
+	ts[2] = ts[0] ^ ts[1];
 
-		X0   = w[0] + ks[0];
-		X1   = w[1] + ks[1];
-		X2   = w[2] + ks[2];
-		X3   = w[3] + ks[3];
-		X4   = w[4] + ks[4];
-		X5   = w[5] + ks[5] + ts[0];
-		X6   = w[6] + ks[6] + ts[1];
-		X7   = w[7] + ks[7];
+	for (i = 0; i < 8; i++)
+		w[i] = le64_to_cpu(((uint64_t *)block)[i]);
+
+	X0   = w[0] + ks[0];
+	X1   = w[1] + ks[1];
+	X2   = w[2] + ks[2];
+	X3   = w[3] + ks[3];
+	X4   = w[4] + ks[4];
+	X5   = w[5] + ks[5] + ts[0];
+	X6   = w[6] + ks[6] + ts[1];
+	X7   = w[7] + ks[7];
 
 #define R512(p0, p1, p2, p3, p4, p5, p6, p7, ROT, rNum) do {           \
 	X##p0 += X##p1; X##p1 = rol64(X##p1, ROT##_0); X##p1 ^= X##p0; \
 	X##p2 += X##p3; X##p3 = rol64(X##p3, ROT##_1); X##p3 ^= X##p2; \
 	X##p4 += X##p5; X##p5 = rol64(X##p5, ROT##_2); X##p5 ^= X##p4; \
 	X##p6 += X##p7; X##p7 = rol64(X##p7, ROT##_3); X##p7 ^= X##p6; \
-		} while (0)
+	} while (0)
 
 #define I512(R) do {                                                    \
 	X0   += ks[((R)+1) % 9];   /* inject the key schedule value */  \
@@ -104,7 +104,7 @@ static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
 	X5   += ks[((R)+6) % 9] + ts[((R)+1) % 3];                      \
 	X6   += ks[((R)+7) % 9] + ts[((R)+2) % 3];                      \
 	X7   += ks[((R)+8) % 9] +     (R)+1;                            \
-		} while (0)
+	} while (0)
 
 #define R512_8_rounds(R) do {                             \
 	R512(0, 1, 2, 3, 4, 5, 6, 7, R_512_0, 8*(R)+1);   \
@@ -117,28 +117,26 @@ static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
 	R512(4, 1, 6, 3, 0, 5, 2, 7, R_512_6, 8*(R)+7);	  \
 	R512(6, 1, 0, 7, 2, 5, 4, 3, R_512_7, 8*(R)+8);	  \
 	I512(2*(R)+1);					  \
-		} while (0)
+	} while (0)
 
-		R512_8_rounds(0);
-		R512_8_rounds(1);
-		R512_8_rounds(2);
-		R512_8_rounds(3);
-		R512_8_rounds(4);
-		R512_8_rounds(5);
-		R512_8_rounds(6);
-		R512_8_rounds(7);
-		R512_8_rounds(8);
+	R512_8_rounds(0);
+	R512_8_rounds(1);
+	R512_8_rounds(2);
+	R512_8_rounds(3);
+	R512_8_rounds(4);
+	R512_8_rounds(5);
+	R512_8_rounds(6);
+	R512_8_rounds(7);
+	R512_8_rounds(8);
 
-		ctx->X[0] = X0 ^ w[0];
-		ctx->X[1] = X1 ^ w[1];
-		ctx->X[2] = X2 ^ w[2];
-		ctx->X[3] = X3 ^ w[3];
-		ctx->X[4] = X4 ^ w[4];
-		ctx->X[5] = X5 ^ w[5];
-		ctx->X[6] = X6 ^ w[6];
-		ctx->X[7] = X7 ^ w[7];
-        }
-
+	ctx->X[0] = X0 ^ w[0];
+	ctx->X[1] = X1 ^ w[1];
+	ctx->X[2] = X2 ^ w[2];
+	ctx->X[3] = X3 ^ w[3];
+	ctx->X[4] = X4 ^ w[4];
+	ctx->X[5] = X5 ^ w[5];
+	ctx->X[6] = X6 ^ w[6];
+	ctx->X[7] = X7 ^ w[7];
 }
 
 void skein_ubi(struct Skein_512_Ctxt *ctx,
