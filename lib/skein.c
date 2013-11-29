@@ -144,7 +144,7 @@ void skein_ubi(const uint64_t *key,
 	tweak_high |= ((uint64_t) 64) << 56;
 	while (inlen > 64) {
 		tweak_low += 64;
-		threefish_block_encrypt(out, tweak_low, tweak_high, (uint64_t *)in, out);
+		threefish_block_encrypt(out, tweak_low, tweak_high, in, out);
 		for (i = 0; i < 8; i++)
 			out[i] ^= le64_to_cpu(((uint64_t *)in)[i]);
 		in += 64;
@@ -157,7 +157,7 @@ void skein_ubi(const uint64_t *key,
 		memmove(buf, in, inlen);
 	tweak_low += inlen;
 	tweak_high |= ((uint64_t) 128) << 56;
-	threefish_block_encrypt(out, tweak_low, tweak_high, (uint64_t *)buf, out);
+	threefish_block_encrypt(out, tweak_low, tweak_high, buf, out);
 	for (i = 0; i < 8; i++)
 		out[i] ^= le64_to_cpu(((uint64_t *)buf)[i]);
 }
@@ -166,16 +166,20 @@ void skein_output(const uint64_t *state,
 		  uint8_t *out,
 		  int out_blocks)
 {
+	uint64_t *outw = (uint64_t *)out;
 	uint64_t tweak_low, tweak_high;
 	uint8_t buf[8];
 	int block;
+	int i;
 
 	tweak_low = 0;
 	tweak_high = ((uint64_t) 63) << 56;
 	for (block = 0; block < out_blocks; block++) {
 		*(uint64_t *)buf = cpu_to_le64(block);
-		skein_ubi(state, tweak_low, tweak_high, buf, 8, out);
-		out += 64;
+		skein_ubi(state, tweak_low, tweak_high, buf, 8, outw);
+		for (i = 0; i < 8; i++)
+			outw[i] = cpu_to_le64(outw[i]);
+		outw += 8;
 	}
 }
 
@@ -185,8 +189,6 @@ int skein_hash(unsigned char *out,
 {
 	uint64_t state[8];
 	uint64_t tweak_low, tweak_high;
-	uint8_t buf[64];
-	int i;
 
 	memcpy(state, IV, sizeof(state));
 
@@ -194,10 +196,7 @@ int skein_hash(unsigned char *out,
 	tweak_high = ((uint64_t) 48) << 56;
 	skein_ubi(state, tweak_low, tweak_high, in, inlen, state);
 
-	skein_output(state, state, 1);
-
-	for (i = 0; i < 8; i++)
-		((uint64_t *)out)[i] = cpu_to_le64(state[i]);
+	skein_output(state, out, 1);
 
 	return 0;
 }
