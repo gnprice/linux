@@ -52,10 +52,8 @@ struct Skein_512_Ctxt {
 #define ks              (kw + KW_KEY_BASE)
 #define ts              (kw + KW_TWK_BASE)
 
-static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
-				    const uint8_t *blkPtr,
-				    size_t blkCnt,
-				    size_t byteCntAdd)
+static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
+                                    const uint8_t *block)
 {
 	uint64_t  kw[12];       /* key schedule words : chaining vars + tweak */
 	uint64_t  X0, X1, X2, X3, X4, X5, X6, X7;  /* local copies, for speed */
@@ -64,9 +62,7 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 
 	ts[0] = ctx->T[0];
 	ts[1] = ctx->T[1];
-	do {
-		ts[0] += byteCntAdd;
-
+        {
 		ks[0] = ctx->X[0];
 		ks[1] = ctx->X[1];
 		ks[2] = ctx->X[2];
@@ -81,7 +77,7 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 		ts[2] = ts[0] ^ ts[1];
 
 		for (i = 0; i < 8; i++)
-			w[i] = le64_to_cpu(((uint64_t *)blkPtr)[i]);
+			w[i] = le64_to_cpu(((uint64_t *)block)[i]);
 
 		X0   = w[0] + ks[0];
 		X1   = w[1] + ks[1];
@@ -91,8 +87,6 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 		X5   = w[5] + ks[5] + ts[0];
 		X6   = w[6] + ks[6] + ts[1];
 		X7   = w[7] + ks[7];
-
-		blkPtr += 64;
 
 #define R512(p0, p1, p2, p3, p4, p5, p6, p7, ROT, rNum) do {           \
 	X##p0 += X##p1; X##p1 = rol64(X##p1, ROT##_0); X##p1 ^= X##p0; \
@@ -143,13 +137,22 @@ static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
 		ctx->X[5] = X5 ^ w[5];
 		ctx->X[6] = X6 ^ w[6];
 		ctx->X[7] = X7 ^ w[7];
+        }
 
-		ts[1] &= ~(((uint64_t) 64) << 56);
-	} while (--blkCnt);
-	ctx->T[0] = ts[0];
-	ctx->T[1] = ts[1];
 }
 
+static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
+				    const uint8_t *blkPtr,
+				    size_t blkCnt,
+				    size_t byteCntAdd)
+{
+	do {
+		ctx->T[0] += byteCntAdd;
+                threefish_block_encrypt(ctx, blkPtr);
+		blkPtr += 64;
+		ctx->T[1] &= ~(((uint64_t) 64) << 56);
+	} while (--blkCnt);
+}
 
 int skein_hash(unsigned char *out,
 	       const unsigned char *in,
