@@ -41,18 +41,13 @@ enum {
 	R_512_7_0 =  8, R_512_7_1 = 35, R_512_7_2 = 56, R_512_7_3 = 22,
 };
 
-struct Skein_512_Ctxt {
-	uint64_t T[2];        /* tweak words: T[0] = byte cnt, T[1] = flags */
-	uint64_t X[8];        /* chaining variables */
-	uint8_t  b[64];       /* partial block buffer (8-byte aligned) */
-};
-
 #define KW_TWK_BASE     (0)
 #define KW_KEY_BASE     (3)
 #define ks              (kw + KW_KEY_BASE)
 #define ts              (kw + KW_TWK_BASE)
 
-static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
+static void threefish_block_encrypt(uint64_t *state,
+				    uint64_t tweak_low, uint64_t tweak_high,
                                     const uint8_t *block)
 {
 	uint64_t  kw[12];       /* key schedule words : chaining vars + tweak */
@@ -60,17 +55,17 @@ static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
 	uint64_t  w[8];                          /* local copy of input block */
 	int i;
 
-	ts[0] = ctx->T[0];
-	ts[1] = ctx->T[1];
+	ts[0] = tweak_low;
+	ts[1] = tweak_high;
 
-	ks[0] = ctx->X[0];
-	ks[1] = ctx->X[1];
-	ks[2] = ctx->X[2];
-	ks[3] = ctx->X[3];
-	ks[4] = ctx->X[4];
-	ks[5] = ctx->X[5];
-	ks[6] = ctx->X[6];
-	ks[7] = ctx->X[7];
+	ks[0] = state[0];
+	ks[1] = state[1];
+	ks[2] = state[2];
+	ks[3] = state[3];
+	ks[4] = state[4];
+	ks[5] = state[5];
+	ks[6] = state[6];
+	ks[7] = state[7];
 	ks[8] = ks[0] ^ ks[1] ^ ks[2] ^ ks[3] ^
 		ks[4] ^ ks[5] ^ ks[6] ^ ks[7] ^ SKEIN_KS_PARITY;
 
@@ -129,57 +124,61 @@ static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
 	R512_8_rounds(7);
 	R512_8_rounds(8);
 
-	ctx->X[0] = X0 ^ w[0];
-	ctx->X[1] = X1 ^ w[1];
-	ctx->X[2] = X2 ^ w[2];
-	ctx->X[3] = X3 ^ w[3];
-	ctx->X[4] = X4 ^ w[4];
-	ctx->X[5] = X5 ^ w[5];
-	ctx->X[6] = X6 ^ w[6];
-	ctx->X[7] = X7 ^ w[7];
+	state[0] = X0 ^ w[0];
+	state[1] = X1 ^ w[1];
+	state[2] = X2 ^ w[2];
+	state[3] = X3 ^ w[3];
+	state[4] = X4 ^ w[4];
+	state[5] = X5 ^ w[5];
+	state[6] = X6 ^ w[6];
+	state[7] = X7 ^ w[7];
 }
 
-void skein_ubi(struct Skein_512_Ctxt *ctx,
+void skein_ubi(uint64_t *state,
+	       uint64_t tweak_low, uint64_t tweak_high,
 	       const unsigned char *in,
 	       unsigned long long inlen)
 {
-	ctx->T[1] |= ((uint64_t) 64) << 56;
+	uint8_t buf[64];
+
+	tweak_high |= ((uint64_t) 64) << 56;
 	while (inlen > 64) {
-		ctx->T[0] += 64;
-		threefish_block_encrypt(ctx, in);
+		tweak_low += 64;
+		threefish_block_encrypt(state, tweak_low, tweak_high, in);
 		in += 64;
 		inlen -= 64;
-		ctx->T[1] &= ~(((uint64_t) 64) << 56);
+		tweak_high &= ~(((uint64_t) 64) << 56);
 	}
 
-	memset(ctx->b, 0, sizeof(ctx->b));
+	memset(buf, 0, sizeof(buf));
 	if (inlen)
-		memmove(ctx->b, in, inlen);
-	ctx->T[0] += inlen;
-	ctx->T[1] |= ((uint64_t) 128) << 56;
-	threefish_block_encrypt(ctx, ctx->b);
+		memmove(buf, in, inlen);
+	tweak_low += inlen;
+	tweak_high |= ((uint64_t) 128) << 56;
+	threefish_block_encrypt(state, tweak_low, tweak_high, buf);
 }
 
 int skein_hash(unsigned char *out,
 	       const unsigned char *in,
 	       unsigned long long inlen)
 {
-	struct Skein_512_Ctxt ctx;
+	uint64_t state[8];
+	uint64_t tweak_low, tweak_high;
+	uint8_t buf[64];
 	int i;
 
-	memcpy(ctx.X, IV, sizeof(ctx.X));
+	memcpy(state, IV, sizeof(state));
 
-	ctx.T[0] = 0;
-	ctx.T[1] = ((uint64_t) 48) << 56;
-	skein_ubi(&ctx, in, inlen);
+	tweak_low = 0;
+	tweak_high = ((uint64_t) 48) << 56;
+	skein_ubi(state, tweak_low, tweak_high, in, inlen);
 
-	ctx.T[0] = 0;
-	ctx.T[1] = ((uint64_t) 63) << 56;
-	memset(ctx.b, 0, sizeof(ctx.b));
-	skein_ubi(&ctx, ctx.b, 8);
+	tweak_high = ((uint64_t) 63) << 56;
+	memset(buf, 0, sizeof(buf));
+	skein_ubi(state, tweak_low, tweak_high, buf, 8);
 
 	for (i = 0; i < 8; i++)
-		((uint64_t *)out)[i] = cpu_to_le64(ctx.X[i]);
+		((uint64_t *)out)[i] = cpu_to_le64(state[i]);
 
 	return 0;
 }
