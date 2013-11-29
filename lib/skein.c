@@ -48,13 +48,11 @@ enum {
 
 void threefish_block_encrypt(const uint64_t *key,
 			     uint64_t tweak_low, uint64_t tweak_high,
-			     const uint8_t *block,
+			     const uint8_t *in,
 			     uint64_t *out)
 {
 	uint64_t  kw[12];       /* key schedule words : chaining vars + tweak */
 	uint64_t  X0, X1, X2, X3, X4, X5, X6, X7;  /* local copies, for speed */
-	uint64_t  w[8];                          /* local copy of input block */
-	int i;
 
 	ts[0] = tweak_low;
 	ts[1] = tweak_high;
@@ -72,17 +70,14 @@ void threefish_block_encrypt(const uint64_t *key,
 
 	ts[2] = ts[0] ^ ts[1];
 
-	for (i = 0; i < 8; i++)
-		w[i] = le64_to_cpu(((uint64_t *)block)[i]);
-
-	X0   = w[0] + ks[0];
-	X1   = w[1] + ks[1];
-	X2   = w[2] + ks[2];
-	X3   = w[3] + ks[3];
-	X4   = w[4] + ks[4];
-	X5   = w[5] + ks[5] + ts[0];
-	X6   = w[6] + ks[6] + ts[1];
-	X7   = w[7] + ks[7];
+	X0   = le64_to_cpu(((uint64_t *)in)[0]) + ks[0];
+	X1   = le64_to_cpu(((uint64_t *)in)[1]) + ks[1];
+	X2   = le64_to_cpu(((uint64_t *)in)[2]) + ks[2];
+	X3   = le64_to_cpu(((uint64_t *)in)[3]) + ks[3];
+	X4   = le64_to_cpu(((uint64_t *)in)[4]) + ks[4];
+	X5   = le64_to_cpu(((uint64_t *)in)[5]) + ks[5] + ts[0];
+	X6   = le64_to_cpu(((uint64_t *)in)[6]) + ks[6] + ts[1];
+	X7   = le64_to_cpu(((uint64_t *)in)[7]) + ks[7];
 
 #define R512(p0, p1, p2, p3, p4, p5, p6, p7, ROT, rNum) do {           \
 	X##p0 += X##p1; X##p1 = rol64(X##p1, ROT##_0); X##p1 ^= X##p0; \
@@ -125,14 +120,14 @@ void threefish_block_encrypt(const uint64_t *key,
 	R512_8_rounds(7);
 	R512_8_rounds(8);
 
-	out[0] = X0 ^ w[0];
-	out[1] = X1 ^ w[1];
-	out[2] = X2 ^ w[2];
-	out[3] = X3 ^ w[3];
-	out[4] = X4 ^ w[4];
-	out[5] = X5 ^ w[5];
-	out[6] = X6 ^ w[6];
-	out[7] = X7 ^ w[7];
+	out[0] = X0;
+	out[1] = X1;
+	out[2] = X2;
+	out[3] = X3;
+	out[4] = X4;
+	out[5] = X5;
+	out[6] = X6;
+	out[7] = X7;
 }
 
 void skein_ubi(const uint64_t *key,
@@ -142,13 +137,16 @@ void skein_ubi(const uint64_t *key,
 	       uint64_t *out)
 {
 	uint8_t buf[64];
+	int i;
 
 	memmove(out, key, 64);
 
 	tweak_high |= ((uint64_t) 64) << 56;
 	while (inlen > 64) {
 		tweak_low += 64;
-		threefish_block_encrypt(out, tweak_low, tweak_high, in, out);
+		threefish_block_encrypt(out, tweak_low, tweak_high, (uint64_t *)in, out);
+		for (i = 0; i < 8; i++)
+			out[i] ^= le64_to_cpu(((uint64_t *)in)[i]);
 		in += 64;
 		inlen -= 64;
 		tweak_high &= ~(((uint64_t) 64) << 56);
@@ -159,7 +157,9 @@ void skein_ubi(const uint64_t *key,
 		memmove(buf, in, inlen);
 	tweak_low += inlen;
 	tweak_high |= ((uint64_t) 128) << 56;
-	threefish_block_encrypt(out, tweak_low, tweak_high, out);
+	threefish_block_encrypt(out, tweak_low, tweak_high, (uint64_t *)buf, out);
+	for (i = 0; i < 8; i++)
+		out[i] ^= le64_to_cpu(((uint64_t *)buf)[i]);
 }
 
 int skein_hash(unsigned char *out,
