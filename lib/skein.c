@@ -141,19 +141,6 @@ static void threefish_block_encrypt(struct Skein_512_Ctxt *ctx,
 
 }
 
-static void Skein_512_Process_Block(struct Skein_512_Ctxt *ctx,
-				    const uint8_t *blkPtr,
-				    size_t blkCnt,
-				    size_t byteCntAdd)
-{
-	do {
-		ctx->T[0] += byteCntAdd;
-                threefish_block_encrypt(ctx, blkPtr);
-		blkPtr += 64;
-		ctx->T[1] &= ~(((uint64_t) 64) << 56);
-	} while (--blkCnt);
-}
-
 int skein_hash(unsigned char *out,
 	       const unsigned char *in,
 	       unsigned long long inlen)
@@ -162,26 +149,28 @@ int skein_hash(unsigned char *out,
 	int i;
 
 	memcpy(ctx.X, IV, sizeof(ctx.X));
+
 	ctx.T[0] = 0;
 	ctx.T[1] = ((uint64_t) 112) << 56;
-
-	if (inlen > 64) {
-		size_t n = (inlen-1) / 64;
-		Skein_512_Process_Block(&ctx, in, n, 64);
-		inlen -= n * 64;
-		in    += n * 64;
+	while (inlen > 64) {
+		ctx.T[0] += 64;
+		threefish_block_encrypt(&ctx, in);
+		in += 64;
+		inlen -= 64;
+		ctx.T[1] &= ~(((uint64_t) 64) << 56);
 	}
 
 	memset(ctx.b, 0, sizeof(ctx.b));
 	if (inlen)
 		memcpy(ctx.b, in, inlen);
+	ctx.T[0] += inlen;
 	ctx.T[1] |= ((uint64_t) 128) << 56;
-	Skein_512_Process_Block(&ctx, ctx.b, 1, inlen);
+	threefish_block_encrypt(&ctx, ctx.b);
 
 	memset(ctx.b, 0, sizeof(ctx.b));
-	ctx.T[0] = 0;
+	ctx.T[0] = 8;
 	ctx.T[1] = ((uint64_t) 255) << 56;
-	Skein_512_Process_Block(&ctx, ctx.b, 1, sizeof(uint64_t));
+	threefish_block_encrypt(&ctx, ctx.b);
 	for (i = 0; i < 8; i++)
 		((uint64_t *)out)[i] = cpu_to_le64(ctx.X[i]);
 
