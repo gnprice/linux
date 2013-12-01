@@ -533,14 +533,13 @@ static void __mix_pool_bytes(struct entropy_store *r, const void *in,
 	_mix_pool_bytes(r, in, nbytes, out);
 }
 
-static void mix_pool_bytes(struct entropy_store *r, const void *in,
-			   int nbytes, __u8 out[64])
+static void mix_pool_bytes(struct entropy_store *r, const void *in, int nbytes)
 {
 	unsigned long flags;
 
 	trace_mix_pool_bytes(r->name, nbytes, _RET_IP_);
 	spin_lock_irqsave(&r->lock, flags);
-	_mix_pool_bytes(r, in, nbytes, out);
+	_mix_pool_bytes(r, in, nbytes, NULL);
 	spin_unlock_irqrestore(&r->lock, flags);
 }
 
@@ -746,7 +745,7 @@ static void add_timer_randomness(struct timer_rand_state *state, unsigned num)
 	sample.jiffies = jiffies;
 	sample.cycles = random_get_entropy();
 	sample.num = num;
-	mix_pool_bytes(&input_pool, &sample, sizeof(sample), NULL);
+	mix_pool_bytes(&input_pool, &sample, sizeof(sample));
 
 	/*
 	 * Calculate number of bits of randomness we probably added.
@@ -919,7 +918,7 @@ static void _xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 	trace_xfer_secondary_pool(r->name, bytes * 8, nbytes * 8,
 				  ENTROPY_BITS(r), ENTROPY_BITS(&input_pool));
 	bytes = extract_entropy(&input_pool, tmp, bytes, r, &credit_bits);
-	mix_pool_bytes(r, tmp, bytes, NULL);
+	mix_pool_bytes(r, tmp, bytes);
 	credit_entropy_bits(r, credit_bits);
 }
 
@@ -1252,13 +1251,13 @@ static void init_std_data(struct entropy_store *r)
 	unsigned long rv;
 
 	r->last_pulled = jiffies;
-	mix_pool_bytes(r, &now, sizeof(now), NULL);
+	mix_pool_bytes(r, &now, sizeof(now));
 	for (i = r->poolinfo->poolbytes; i > 0; i -= sizeof(rv)) {
 		if (!arch_get_random_long(&rv))
 			rv = random_get_entropy();
-		mix_pool_bytes(r, &rv, sizeof(rv), NULL);
+		mix_pool_bytes(r, &rv, sizeof(rv));
 	}
-	mix_pool_bytes(r, utsname(), sizeof(*(utsname())), NULL);
+	mix_pool_bytes(r, utsname(), sizeof(*(utsname())));
 }
 
 /*
@@ -1375,7 +1374,7 @@ write_pool(struct entropy_store *r, const char __user *buffer, size_t count)
 		count -= bytes;
 		p += bytes;
 
-		mix_pool_bytes(r, buf, bytes, NULL);
+		mix_pool_bytes(r, buf, bytes);
 		cond_resched();
 	}
 
