@@ -454,28 +454,6 @@ static struct entropy_store input_pool = {
 	.pool = input_pool_data
 };
 
-static struct entropy_store _blocking_pool = {
-	POOL_INIT(
-		.poolinfo = &poolinfo_table[1],
-		.name = "blocking"
-		),
-	.lock = __SPIN_LOCK_UNLOCKED(_blocking_pool.lock),
-	.pool = blocking_pool_data,
-	.push_work = __WORK_INITIALIZER(_blocking_pool.push_work,
-					push_to_pool),
-};
-
-static struct entropy_store _nonblocking_pool = {
-	POOL_INIT(
-		.poolinfo = &poolinfo_table[1],
-		.name = "nonblocking"
-		),
-	.lock = __SPIN_LOCK_UNLOCKED(_nonblocking_pool.lock),
-	.pool = nonblocking_pool_data,
-	.push_work = __WORK_INITIALIZER(_nonblocking_pool.push_work,
-					push_to_pool),
-};
-
 static __u32 const twist_table[8] = {
 	0x00000000, 0x3b6e20c8, 0x76dc4190, 0x4db26158,
 	0xedb88320, 0xd6d6a3e8, 0x9b64c2b0, 0xa00ae278 };
@@ -883,10 +861,32 @@ struct generator {
 	const char *name;
 };
 
+static struct entropy_store _blocking_pool = {
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[1],
+		.name = "blocking"
+		),
+	.lock = __SPIN_LOCK_UNLOCKED(_blocking_pool.lock),
+	.pool = blocking_pool_data,
+	.push_work = __WORK_INITIALIZER(_blocking_pool.push_work,
+					push_to_pool),
+};
+
 static struct generator blocking_pool = {
 	._store = &_blocking_pool,
 	.a = &_blocking_pool.a,
 	.name = "blocking",
+};
+
+static struct entropy_store _nonblocking_pool = {
+	POOL_INIT(
+		.poolinfo = &poolinfo_table[1],
+		.name = "nonblocking"
+		),
+	.lock = __SPIN_LOCK_UNLOCKED(_nonblocking_pool.lock),
+	.pool = nonblocking_pool_data,
+	.push_work = __WORK_INITIALIZER(_nonblocking_pool.push_work,
+					push_to_pool),
 };
 
 static struct generator nonblocking_pool = {
