@@ -123,58 +123,57 @@ void threefish_block_encrypt(uint64_t *context,
 	out[7] = X7;
 }
 
-/* The "context" is as above.  It will be scribbled over; if the input
- * is one block or less, the key will be left unmodified.  Overlap is
- * OK as above.
- */
-void skein_ubi(uint64_t *context,
-	       const unsigned char *in,
-	       unsigned long long inlen,
-	       uint64_t *out)
+void skein_init(uint64_t *context)
 {
+	memcpy(context, IV, sizeof(IV));
+	context[9] = 0;
+	context[10] = ((uint64_t) (48|64)) << 56;
+}
+
+void skein_transform_notlast(uint64_t *context, const char *data)
+{
+	int i;
+	context[9] += 64;
+	threefish_block_encrypt(context, data, context);
+	for (i = 0; i < 8; i++)
+		context[i] ^= le64_to_cpu(((uint64_t *)data)[i]);
+	context[10] &= ~(((uint64_t) 64) << 56);
+}
+
+static void _skein_transform_last(uint64_t *context,
+				  const char *data,
+				  int len,
+				  uint64_t *out)
+{
+	int i;
+	context[9] += len;
+	context[10] |= ((uint64_t) 128) << 56;
+	threefish_block_encrypt(context, data, out);
+	for (i = 0; i < 8; i++)
+		out[i] ^= le64_to_cpu(((uint64_t *)data)[i]);
+}
+
+/* NB "data" must be a full, zero-padded block. */
+void skein_transform_last(uint64_t *context, const char *data, int len)
+{
+	_skein_transform_last(context, data, len, context);
+}
+
+/* The "context" is an 8-word key, which is not mutated, followed by 4
+ * words of scratch space. */
+void skein_output_block(uint64_t *context, size_t index, char *out)
+{
+	uint64_t *outw = (uint64_t *)out;
 	uint8_t buf[64];
 	int i;
 
-	context[10] |= ((uint64_t) 64) << 56;
-	while (inlen > 64) {
-		context[9] += 64;
-		threefish_block_encrypt(context, in, context);
-		for (i = 0; i < 8; i++)
-			context[i] ^= le64_to_cpu(((uint64_t *)in)[i]);
-		in += 64;
-		inlen -= 64;
-		context[10] &= ~(((uint64_t) 64) << 56);
-	}
-
-	memset(buf, 0, sizeof(buf));
-	if (inlen)
-		memmove(buf, in, inlen);
-	context[9] += inlen;
-	context[10] |= ((uint64_t) 128) << 56;
-	threefish_block_encrypt(context, buf, out);
+	*(uint64_t *)buf = cpu_to_le64(index);
+	memset(buf + 8, 0, sizeof(buf) - 8);
+	context[9] = 0;
+	context[10] = ((uint64_t) 63|64) << 56;
+	_skein_transform_last(context, buf, 8, outw);
 	for (i = 0; i < 8; i++)
-		out[i] ^= le64_to_cpu(((uint64_t *)buf)[i]);
-}
-
-/* The "context" is an 8-word key followed by 4 words of scratch space. */
-void skein_output(uint64_t *context,
-		  uint8_t *out,
-		  int out_blocks)
-{
-	uint64_t *outw = (uint64_t *)out;
-	uint8_t buf[8];
-	int block;
-	int i;
-
-	for (block = 0; block < out_blocks; block++) {
-		context[9] = 0;
-		context[10] = ((uint64_t) 63) << 56;
-		*(uint64_t *)buf = cpu_to_le64(block);
-		skein_ubi(context, buf, 8, outw);
-		for (i = 0; i < 8; i++)
-			outw[i] = cpu_to_le64(outw[i]);
-		outw += 8;
-	}
+		outw[i] = cpu_to_le64(outw[i]);
 }
 
 int skein_hash(unsigned char *out,
@@ -182,14 +181,20 @@ int skein_hash(unsigned char *out,
 	       unsigned long long inlen)
 {
 	uint64_t context[12];
+	uint8_t buf[64];
 
-	memcpy(context, IV, sizeof(IV));
+	skein_init(context);
 
-	context[9] = 0;
-	context[10] = ((uint64_t) 48) << 56;
-	skein_ubi(context, in, inlen, context);
+	while (inlen > 64) {
+		skein_transform_notlast(context, in);
+		in += 64;
+		inlen -= 64;
+	}
+	memset(buf, 0, sizeof(buf));
+	memmove(buf, in, inlen);
+	skein_transform_last(context, buf, inlen);
 
-	skein_output(context, out, 1);
+	skein_output_block(context, 0, out);
 
 	return 0;
 }
