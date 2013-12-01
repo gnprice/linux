@@ -533,6 +533,8 @@ static void mix_pool_bytes(struct entropy_store *r, const void *in, int nbytes)
 	spin_unlock_irqrestore(&r->lock, flags);
 }
 
+typedef void mix_bytes_fn(void *r, const void *in, int nbytes);
+
 struct fast_pool {
 	__u32		pool[4];
 	unsigned long	last;
@@ -1327,19 +1329,19 @@ EXPORT_SYMBOL(get_random_bytes_arch);
  * data into the pool to prepare it for use. The pool is not cleared
  * as that can only decrease the entropy in the pool.
  */
-static void init_std_data(struct entropy_store *r)
+static void init_std_data(void *r, mix_bytes_fn *f, int poolbytes)
 {
 	int i;
 	ktime_t now = ktime_get_real();
 	unsigned long rv;
 
-	mix_pool_bytes(r, &now, sizeof(now));
-	for (i = r->poolinfo->poolbytes; i > 0; i -= sizeof(rv)) {
+	f(r, &now, sizeof(now));
+	for (i = poolbytes; i > 0; i -= sizeof(rv)) {
 		if (!arch_get_random_long(&rv))
 			rv = random_get_entropy();
-		mix_pool_bytes(r, &rv, sizeof(rv));
+		f(r, &rv, sizeof(rv));
 	}
-	mix_pool_bytes(r, utsname(), sizeof(*(utsname())));
+	f(r, utsname(), sizeof(*(utsname())));
 }
 
 /*
@@ -1354,9 +1356,12 @@ static void init_std_data(struct entropy_store *r)
  */
 static int rand_initialize(void)
 {
-	init_std_data(&input_pool);
-	init_std_data(&_blocking_pool);
-	init_std_data(&_nonblocking_pool);
+	init_std_data(&input_pool, (mix_bytes_fn *)mix_pool_bytes,
+		      input_pool.poolinfo->poolbytes);
+	init_std_data(&blocking_pool, (mix_bytes_fn *)mix_generator_bytes,
+		      blocking_pool.a->poolinfo->poolbytes);
+	init_std_data(&nonblocking_pool, (mix_bytes_fn *)mix_generator_bytes,
+		      nonblocking_pool.a->poolinfo->poolbytes);
 	nonblocking_pool.last_pulled = jiffies;
 	return 0;
 }
@@ -1443,7 +1448,7 @@ random_poll(struct file *file, poll_table * wait)
 }
 
 static int
-write_pool(struct entropy_store *r, const char __user *buffer, size_t count)
+write_pool(void *r, mix_bytes_fn *f, const char __user *buffer, size_t count)
 {
 	size_t bytes;
 	__u32 buf[16];
@@ -1457,7 +1462,7 @@ write_pool(struct entropy_store *r, const char __user *buffer, size_t count)
 		count -= bytes;
 		p += bytes;
 
-		mix_pool_bytes(r, buf, bytes);
+		f(r, buf, bytes);
 		cond_resched();
 	}
 
@@ -1469,10 +1474,12 @@ static ssize_t random_write(struct file *file, const char __user *buffer,
 {
 	size_t ret;
 
-	ret = write_pool(&_blocking_pool, buffer, count);
+	ret = write_pool(&blocking_pool, (mix_bytes_fn *)mix_generator_bytes,
+			 buffer, count);
 	if (ret)
 		return ret;
-	ret = write_pool(&_nonblocking_pool, buffer, count);
+	ret = write_pool(&nonblocking_pool, (mix_bytes_fn *)mix_generator_bytes,
+			 buffer, count);
 	if (ret)
 		return ret;
 
@@ -1508,8 +1515,8 @@ static long random_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 		if (get_user(size, p++))
 			return -EFAULT;
-		retval = write_pool(&input_pool, (const char __user *)p,
-				    size);
+		retval = write_pool(&input_pool, (mix_bytes_fn *)mix_pool_bytes,
+				    (const char __user *)p, size);
 		if (retval < 0)
 			return retval;
 		credit_entropy_bits_safe(&input_pool.a, ent_count);
