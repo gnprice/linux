@@ -6,8 +6,8 @@
 
 void skein_init(uint64_t *context);
 void skein_transform_notlast(uint64_t *context, const char *data);
-void skein_transform_last(uint64_t *context, const char *data);
-void skein_output_block(const uint64_t *state, size_t index, char *out);
+void skein_transform_last(uint64_t *context, const char *data, int len);
+void skein_output_block(const uint64_t *context, size_t index, char *out);
 
 
 #define SHA_DIGEST_WORDS 5
