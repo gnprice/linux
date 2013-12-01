@@ -276,7 +276,7 @@
 #define OUTPUT_POOL_WORDS	(1 << (OUTPUT_POOL_SHIFT-5))
 #define SEC_XFER_SIZE		512
 #define POOL_EXTRACT_SIZE	10
-#define EXTRACT_SIZE		POOL_EXTRACT_SIZE
+#define EXTRACT_SIZE		SKEIN_BLOCK_BYTES
 
 #define DEBUG_RANDOM_BOOT 0
 
@@ -437,8 +437,6 @@ struct entropy_store {
 };
 
 static __u32 input_pool_data[INPUT_POOL_WORDS];
-static __u32 blocking_pool_data[OUTPUT_POOL_WORDS];
-static __u32 nonblocking_pool_data[OUTPUT_POOL_WORDS];
 
 #define POOL_INIT(init...) init, .a = {init}
 static struct entropy_store input_pool = {
@@ -856,11 +854,13 @@ void add_disk_randomness(struct gendisk *disk)
 static void push_to_pool(struct work_struct *work);
 
 struct generator {
+	struct entropy_account _a;
 	struct entropy_account *a;
-	struct entropy_store *_store;
 	const char *name;
 	unsigned long last_pulled;
 	struct work_struct push_work;
+
+	__u64 skein_context[SKEIN_CONTEXT_WORDS];
 
 	/* Lock-protected data: */
 	spinlock_t lock;
@@ -868,54 +868,64 @@ struct generator {
 	__u8 last_data[EXTRACT_SIZE];
 };
 
-static struct entropy_store _blocking_pool = {
-	POOL_INIT(
-		.poolinfo = &poolinfo_table[1],
-		.name = "blocking"
-		),
-	.lock = __SPIN_LOCK_UNLOCKED(_blocking_pool.lock),
-	.pool = blocking_pool_data,
-};
+#define GEN_INIT(init...) init, ._a = {.poolinfo = &poolinfo_table[1], init}
 
 static struct generator blocking_pool = {
-	._store = &_blocking_pool,
-	.a = &_blocking_pool.a,
-	.name = "blocking",
+	GEN_INIT(.name = "blocking"),
+	.a = &blocking_pool._a,
 	.lock = __SPIN_LOCK_UNLOCKED(blocking_pool.lock),
 	.push_work = __WORK_INITIALIZER(blocking_pool.push_work,
 					push_to_pool),
 };
 
-static struct entropy_store _nonblocking_pool = {
-	POOL_INIT(
-		.poolinfo = &poolinfo_table[1],
-		.name = "nonblocking"
-		),
-	.lock = __SPIN_LOCK_UNLOCKED(_nonblocking_pool.lock),
-	.pool = nonblocking_pool_data,
-};
-
 static struct generator nonblocking_pool = {
-	._store = &_nonblocking_pool,
-	.a = &_nonblocking_pool.a,
-	.name = "nonblocking",
+	GEN_INIT(.name = "nonblocking"),
+	.a = &nonblocking_pool._a,
 	.lock = __SPIN_LOCK_UNLOCKED(nonblocking_pool.lock),
 	.push_work = __WORK_INITIALIZER(nonblocking_pool.push_work,
 					push_to_pool),
 };
 
-struct entropy_account *_nonblocking_account = &_nonblocking_pool.a;
+struct entropy_account *_nonblocking_account = &nonblocking_pool._a;
 
 static void mix_generator_bytes(struct generator *gen, const void *in,
 				int nbytes)
 {
-	mix_pool_bytes(gen->_store, in, nbytes);
+	__u64 hash_context[SKEIN_CONTEXT_WORDS];
+	char buf[SKEIN_BLOCK_BYTES];
+
+	if (nbytes == 0)
+		return;
+
+	/* new state = Skein hash of old state + input */
+
+	skein_init(hash_context);
+	skein_transform_notlast(hash_context, (char *)(gen->skein_context));
+	while (nbytes > SKEIN_BLOCK_BYTES) {
+		skein_transform_notlast(hash_context, in);
+		in += SKEIN_BLOCK_BYTES;
+		nbytes -= SKEIN_BLOCK_BYTES;
+	}
+	memcpy(buf, in, nbytes);
+	memset(buf + nbytes, 0, sizeof(buf) - nbytes);
+	skein_transform_last(hash_context, buf, nbytes);
+
+	skein_output_block(hash_context, 0, (char *)gen->skein_context);
+	memset(gen->skein_context + 8, 0, 32);
 }
 
-static void extract_buf(struct entropy_store *r, __u8 *out);
-static void extract_generator(struct generator *gen, __u8 *out)
+static void extract_generator_block(struct generator *gen, size_t index, __u8 *out)
 {
-	extract_buf(gen->_store, out);
+	WARN_ON(index < 1); /* index 0 reserved for next state */
+	skein_output_block(gen->skein_context, index, out);
+}
+
+static void advance_generator(struct generator *gen)
+{
+	/* Generate the new state... */
+	skein_output_block(gen->skein_context, 0, (char *)gen->skein_context);
+	/* ... and zero out any remnant of the old one. */
+	memset(gen->skein_context + 8, 0, 32);
 }
 
 /*********************************************************************
@@ -1150,6 +1160,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 			       size_t nbytes)
 {
 	ssize_t ret = 0, i;
+	size_t block = 1;
 	__u8 tmp[EXTRACT_SIZE];
 	unsigned long flags;
 
@@ -1162,7 +1173,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 			trace_extract_entropy(gen->name, EXTRACT_SIZE,
 					      ENTROPY_BITS_A(gen->a), _RET_IP_);
 			xfer_secondary_pool(gen, EXTRACT_SIZE);
-			extract_generator(gen, tmp);
+			extract_generator_block(gen, block++, tmp);
 
 			spin_lock_irqsave(&gen->lock, flags);
 			memcpy(gen->last_data, tmp, EXTRACT_SIZE);
@@ -1176,7 +1187,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 	nbytes = account(gen->a, nbytes, NULL, NULL);
 
 	while (nbytes) {
-		extract_generator(gen, tmp);
+		extract_generator_block(gen, block++, tmp);
 
 		if (fips_enabled) {
 			spin_lock_irqsave(&gen->lock, flags);
@@ -1194,6 +1205,7 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 
 	/* Wipe data just returned from memory */
 	memset(tmp, 0, sizeof(tmp));
+	advance_generator(gen);
 
 	return ret;
 }
@@ -1232,6 +1244,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 				    size_t nbytes)
 {
 	ssize_t ret = 0, i;
+	size_t block = 1;
 	__u8 tmp[EXTRACT_SIZE];
 
 	trace_extract_entropy_user(gen->name, nbytes,
@@ -1249,7 +1262,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 			schedule();
 		}
 
-		extract_generator(gen, tmp);
+		extract_generator_block(gen, block++, tmp);
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		if (copy_to_user(buf, tmp, i)) {
 			ret = -EFAULT;
@@ -1263,6 +1276,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 
 	/* Wipe data just returned from memory */
 	memset(tmp, 0, sizeof(tmp));
+	advance_generator(gen);
 
 	return ret;
 }
