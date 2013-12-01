@@ -2,7 +2,7 @@
 #define __CRYPTOHASH_H
 
 #define SKEIN_STATE_WORDS 8
-#define SKEIN_CONTEXT_WORDS 10
+#define SKEIN_CONTEXT_WORDS 12
 
 void skein_init(uint64_t *context);
 void skein_transform_notlast(uint64_t *context, const char *data);
