@@ -275,7 +275,8 @@
 #define OUTPUT_POOL_SHIFT	10
 #define OUTPUT_POOL_WORDS	(1 << (OUTPUT_POOL_SHIFT-5))
 #define SEC_XFER_SIZE		512
-#define EXTRACT_SIZE		10
+#define POOL_EXTRACT_SIZE	10
+#define EXTRACT_SIZE		POOL_EXTRACT_SIZE
 
 #define DEBUG_RANDOM_BOOT 0
 
@@ -1058,7 +1059,7 @@ retry:
 		/* When a reseed drains the pool, we might as well suck up any
 		 * underestimated entropy as well as what we estimate is there. */
 		WARN_ON(credit_bits == NULL);
-		ibytes = max_t(size_t, ibytes, 2*EXTRACT_SIZE);
+		ibytes = max_t(size_t, ibytes, 2*POOL_EXTRACT_SIZE);
 	}
 	entropy_count = max_t(int, 0,
 			      entropy_count - (ibytes << (ENTROPY_SHIFT + 3)));
@@ -1137,7 +1138,7 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 	hash.w[1] ^= hash.w[4];
 	hash.w[2] ^= rol32(hash.w[2], 16);
 
-	memcpy(out, &hash, EXTRACT_SIZE);
+	memcpy(out, &hash, POOL_EXTRACT_SIZE);
 	memset(&hash, 0, sizeof(hash));
 }
 
@@ -1202,7 +1203,7 @@ static ssize_t extract_entropy_xfer(void *buf, size_t nbytes,
 				    int *credit_bits)
 {
 	ssize_t ret = 0, i;
-	__u8 tmp[EXTRACT_SIZE];
+	__u8 tmp[POOL_EXTRACT_SIZE];
 
 	trace_extract_entropy(input_pool.name, nbytes,
 			      ENTROPY_BITS(&input_pool), _RET_IP_);
@@ -1210,7 +1211,7 @@ static ssize_t extract_entropy_xfer(void *buf, size_t nbytes,
 
 	while (nbytes) {
 		extract_buf(&input_pool, tmp);
-		i = min_t(int, nbytes, EXTRACT_SIZE);
+		i = min_t(int, nbytes, POOL_EXTRACT_SIZE);
 		memcpy(buf, tmp, i);
 		nbytes -= i;
 		buf += i;
