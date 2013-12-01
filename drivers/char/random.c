@@ -860,10 +860,9 @@ struct generator {
 	unsigned long last_pulled;
 	struct work_struct push_work;
 
-	__u64 skein_context[SKEIN_CONTEXT_WORDS];
-
 	/* Lock-protected data: */
 	spinlock_t lock;
+	__u64 skein_context[SKEIN_CONTEXT_WORDS];
 	unsigned int last_data_init:1;
 	__u8 last_data[EXTRACT_SIZE];
 };
@@ -893,12 +892,14 @@ static void mix_generator_bytes(struct generator *gen, const void *in,
 {
 	__u64 hash_context[SKEIN_CONTEXT_WORDS];
 	char buf[SKEIN_BLOCK_BYTES];
+	unsigned long flags;
 
 	if (nbytes == 0)
 		return;
 
 	/* new state = Skein hash of old state + input */
 
+	spin_lock_irqsave(&gen->lock, flags);
 	skein_init(hash_context);
 	skein_transform_notlast(hash_context, (char *)(gen->skein_context));
 	while (nbytes > SKEIN_BLOCK_BYTES) {
@@ -912,20 +913,27 @@ static void mix_generator_bytes(struct generator *gen, const void *in,
 
 	skein_output_block(hash_context, 0, (char *)gen->skein_context);
 	memset(gen->skein_context + 8, 0, 32);
+	spin_unlock_irqrestore(&gen->lock, flags);
 }
 
 static void extract_generator_block(struct generator *gen, size_t index, __u8 *out)
 {
+	unsigned long flags;
 	WARN_ON(index < 1); /* index 0 reserved for next state */
+	spin_lock_irqsave(&gen->lock, flags);
 	skein_output_block(gen->skein_context, index, out);
+	spin_unlock_irqrestore(&gen->lock, flags);
 }
 
 static void advance_generator(struct generator *gen)
 {
+	unsigned long flags;
+	spin_lock_irqsave(&gen->lock, flags);
 	/* Generate the new state... */
 	skein_output_block(gen->skein_context, 0, (char *)gen->skein_context);
 	/* ... and zero out any remnant of the old one. */
 	memset(gen->skein_context + 8, 0, 32);
+	spin_unlock_irqrestore(&gen->lock, flags);
 }
 
 /*********************************************************************
