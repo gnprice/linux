@@ -887,6 +887,42 @@ static struct generator nonblocking_pool = {
 
 struct entropy_account *_nonblocking_account = &nonblocking_pool._a;
 
+static void extract_generator_block(struct generator *gen, size_t index, __u8 *out);
+
+static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
+{
+	unsigned long flags;
+
+	if (!fips_enabled)
+		return;
+
+	spin_lock_irqsave(&gen->lock, flags);
+	if (!gen->last_data_init) {
+		gen->last_data_init = 1;
+		spin_unlock_irqrestore(&gen->lock, flags);
+
+		extract_generator_block(gen, (*block)++, tmp);
+
+		spin_lock_irqsave(&gen->lock, flags);
+		memcpy(gen->last_data, tmp, EXTRACT_SIZE);
+	}
+	spin_unlock_irqrestore(&gen->lock, flags);
+}
+
+static void fips_check(struct generator *gen, __u8 *tmp)
+{
+	unsigned long flags;
+
+	if (!fips_enabled)
+		return;
+
+	spin_lock_irqsave(&gen->lock, flags);
+	if (!memcmp(tmp, gen->last_data, EXTRACT_SIZE))
+		panic("Hardware RNG duplicated output!\n");
+	memcpy(gen->last_data, tmp, EXTRACT_SIZE);
+	spin_unlock_irqrestore(&gen->lock, flags);
+}
+
 static void mix_generator_bytes(struct generator *gen, const void *in,
 				int nbytes)
 {
@@ -1158,40 +1194,6 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 
 	memcpy(out, &hash, POOL_EXTRACT_SIZE);
 	memset(&hash, 0, sizeof(hash));
-}
-
-static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
-{
-	unsigned long flags;
-
-	if (!fips_enabled)
-		return;
-
-	spin_lock_irqsave(&gen->lock, flags);
-	if (!gen->last_data_init) {
-		gen->last_data_init = 1;
-		spin_unlock_irqrestore(&gen->lock, flags);
-
-		extract_generator_block(gen, (*block)++, tmp);
-
-		spin_lock_irqsave(&gen->lock, flags);
-		memcpy(gen->last_data, tmp, EXTRACT_SIZE);
-	}
-	spin_unlock_irqrestore(&gen->lock, flags);
-}
-
-static void fips_check(struct generator *gen, __u8 *tmp)
-{
-	unsigned long flags;
-
-	if (!fips_enabled)
-		return;
-
-	spin_lock_irqsave(&gen->lock, flags);
-	if (!memcmp(tmp, gen->last_data, EXTRACT_SIZE))
-		panic("Hardware RNG duplicated output!\n");
-	memcpy(gen->last_data, tmp, EXTRACT_SIZE);
-	spin_unlock_irqrestore(&gen->lock, flags);
 }
 
 /*
