@@ -1160,6 +1160,40 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 	memset(&hash, 0, sizeof(hash));
 }
 
+static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
+{
+	unsigned long flags;
+
+	if (!fips_enabled)
+		return;
+
+	spin_lock_irqsave(&gen->lock, flags);
+	if (!gen->last_data_init) {
+		gen->last_data_init = 1;
+		spin_unlock_irqrestore(&gen->lock, flags);
+		xfer_secondary_pool(gen, EXTRACT_SIZE);
+		extract_generator_block(gen, (*block)++, tmp);
+
+		spin_lock_irqsave(&gen->lock, flags);
+		memcpy(gen->last_data, tmp, EXTRACT_SIZE);
+	}
+	spin_unlock_irqrestore(&gen->lock, flags);
+}
+
+static void fips_check(struct generator *gen, __u8 *tmp)
+{
+	unsigned long flags;
+
+	if (!fips_enabled)
+		return;
+
+	spin_lock_irqsave(&gen->lock, flags);
+	if (!memcmp(tmp, gen->last_data, EXTRACT_SIZE))
+		panic("Hardware RNG duplicated output!\n");
+	memcpy(gen->last_data, tmp, EXTRACT_SIZE);
+	spin_unlock_irqrestore(&gen->lock, flags);
+}
+
 /*
  * This function extracts randomness from the "entropy pool", and
  * returns it in a buffer.
@@ -1170,24 +1204,8 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 	ssize_t ret = 0, i;
 	size_t block = 1;
 	__u8 tmp[EXTRACT_SIZE];
-	unsigned long flags;
 
-	/* if last_data isn't primed, we need EXTRACT_SIZE extra bytes */
-	if (fips_enabled) {
-		spin_lock_irqsave(&gen->lock, flags);
-		if (!gen->last_data_init) {
-			gen->last_data_init = 1;
-			spin_unlock_irqrestore(&gen->lock, flags);
-			trace_extract_entropy(gen->name, EXTRACT_SIZE,
-					      ENTROPY_BITS_A(gen->a), _RET_IP_);
-			xfer_secondary_pool(gen, EXTRACT_SIZE);
-			extract_generator_block(gen, block++, tmp);
-
-			spin_lock_irqsave(&gen->lock, flags);
-			memcpy(gen->last_data, tmp, EXTRACT_SIZE);
-		}
-		spin_unlock_irqrestore(&gen->lock, flags);
-	}
+	fips_init(gen, &block, tmp);
 
 	trace_extract_entropy(gen->name, nbytes,
 			      ENTROPY_BITS_A(gen->a), _RET_IP_);
@@ -1196,14 +1214,8 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 
 	while (nbytes) {
 		extract_generator_block(gen, block++, tmp);
+		fips_check(gen, tmp);
 
-		if (fips_enabled) {
-			spin_lock_irqsave(&gen->lock, flags);
-			if (!memcmp(tmp, gen->last_data, EXTRACT_SIZE))
-				panic("Hardware RNG duplicated output!\n");
-			memcpy(gen->last_data, tmp, EXTRACT_SIZE);
-			spin_unlock_irqrestore(&gen->lock, flags);
-		}
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		memcpy(buf, tmp, i);
 		nbytes -= i;
