@@ -863,6 +863,8 @@ struct generator {
 	/* Lock-protected data: */
 	spinlock_t lock;
 	__u64 skein_context[SKEIN_CONTEXT_WORDS];
+	char output_buf[SKEIN_BLOCK_BYTES];
+	int buf_len;
 	unsigned int last_data_init:1;
 	__u8 last_data[EXTRACT_SIZE];
 };
@@ -889,8 +891,9 @@ struct entropy_account *_nonblocking_account = &nonblocking_pool._a;
 
 static void extract_generator_block(struct generator *gen, size_t index, __u8 *out);
 
-static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
+static void fips_init(struct generator *gen, size_t *block)
 {
+	__u8 tmp[EXTRACT_SIZE];
 	unsigned long flags;
 
 	if (!fips_enabled)
@@ -901,7 +904,7 @@ static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
 		gen->last_data_init = 1;
 		spin_unlock_irqrestore(&gen->lock, flags);
 
-		extract_generator_block(gen, (*block)++, tmp);
+		extract_generator_block(gen, ++(*block), tmp);
 
 		spin_lock_irqsave(&gen->lock, flags);
 		memcpy(gen->last_data, tmp, EXTRACT_SIZE);
@@ -955,6 +958,31 @@ static void extract_generator_block(struct generator *gen, size_t index, __u8 *o
 	skein_output_block(gen->skein_context, index, out);
 	fips_check(gen, out);
 	spin_unlock_irqrestore(&gen->lock, flags);
+}
+
+static int extract_generator_subblock(struct generator *gen,
+				      size_t *index,
+				      size_t nbytes,
+				      __u8 *out)
+{
+	size_t i;
+
+	if (gen->buf_len) {
+		i = min_t(int, nbytes, gen->buf_len);
+		memcpy(out, gen->output_buf + gen->buf_len - i, i);
+		memset(gen->output_buf + gen->buf_len - i, 0, i);
+		gen->buf_len -= i;
+		return i;
+	} else if (nbytes >= EXTRACT_SIZE) {
+		extract_generator_block(gen, ++(*index), out);
+		return EXTRACT_SIZE;
+	} else {
+		extract_generator_block(gen, ++(*index), gen->output_buf);
+		memcpy(out, gen->output_buf + EXTRACT_SIZE - nbytes, nbytes);
+		memset(gen->output_buf + EXTRACT_SIZE - nbytes, 0, nbytes);
+		gen->buf_len = EXTRACT_SIZE - nbytes;
+		return nbytes;
+	}
 }
 
 static void advance_generator(struct generator *gen)
@@ -1199,30 +1227,24 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 static ssize_t extract_entropy(struct generator *gen, void *buf,
 			       size_t nbytes)
 {
-	ssize_t ret = 0, i;
-	size_t block = 1;
-	__u8 tmp[EXTRACT_SIZE];
+	size_t ret = nbytes, i;
+	size_t block = 0;
 
 	trace_extract_entropy(gen->name, nbytes,
 			      ENTROPY_BITS_A(gen->a), _RET_IP_);
 	xfer_secondary_pool(gen, nbytes);
 	nbytes = account(gen->a, nbytes, NULL, NULL);
 
-	fips_init(gen, &block, tmp);
+	fips_init(gen, &block);
 
 	while (nbytes) {
-		extract_generator_block(gen, block++, tmp);
-
-		i = min_t(int, nbytes, EXTRACT_SIZE);
-		memcpy(buf, tmp, i);
+		i = extract_generator_subblock(gen, &block, nbytes, buf);
 		nbytes -= i;
 		buf += i;
-		ret += i;
 	}
 
-	/* Wipe data just returned from memory */
-	memset(tmp, 0, sizeof(tmp));
-	advance_generator(gen);
+	if (block)
+		advance_generator(gen);
 
 	return ret;
 }
