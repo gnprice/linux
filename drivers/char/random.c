@@ -1283,7 +1283,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 				    size_t nbytes)
 {
 	ssize_t ret = 0, i;
-	size_t block = 1;
+	size_t block = 0;
 	__u8 tmp[EXTRACT_SIZE];
 
 	trace_extract_entropy_user(gen->name, nbytes,
@@ -1301,8 +1301,7 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 			schedule();
 		}
 
-		extract_generator_block(gen, block++, tmp);
-		i = min_t(int, nbytes, EXTRACT_SIZE);
+		i = extract_generator_subblock(gen, &block, nbytes, tmp);
 		if (copy_to_user(buf, tmp, i)) {
 			ret = -EFAULT;
 			break;
@@ -1315,7 +1314,8 @@ static ssize_t extract_entropy_user(struct generator *gen, void __user *buf,
 
 	/* Wipe data just returned from memory */
 	memset(tmp, 0, sizeof(tmp));
-	advance_generator(gen);
+	if (block)
+		advance_generator(gen);
 
 	return ret;
 }
