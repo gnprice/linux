@@ -909,18 +909,13 @@ static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
 	spin_unlock_irqrestore(&gen->lock, flags);
 }
 
-static void fips_check(struct generator *gen, __u8 *tmp)
+static void fips_check(struct generator *gen, __u8 *buf)
 {
-	unsigned long flags;
-
 	if (!fips_enabled)
 		return;
-
-	spin_lock_irqsave(&gen->lock, flags);
-	if (!memcmp(tmp, gen->last_data, EXTRACT_SIZE))
+	if (!memcmp(buf, gen->last_data, EXTRACT_SIZE))
 		panic("Hardware RNG duplicated output!\n");
-	memcpy(gen->last_data, tmp, EXTRACT_SIZE);
-	spin_unlock_irqrestore(&gen->lock, flags);
+	memcpy(gen->last_data, buf, EXTRACT_SIZE);
 }
 
 static void mix_generator_bytes(struct generator *gen, const void *in,
@@ -958,6 +953,7 @@ static void extract_generator_block(struct generator *gen, size_t index, __u8 *o
 	WARN_ON(index < 1); /* index 0 reserved for next state */
 	spin_lock_irqsave(&gen->lock, flags);
 	skein_output_block(gen->skein_context, index, out);
+	fips_check(gen, out);
 	spin_unlock_irqrestore(&gen->lock, flags);
 }
 
@@ -1216,7 +1212,6 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 
 	while (nbytes) {
 		extract_generator_block(gen, block++, tmp);
-		fips_check(gen, tmp);
 
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		memcpy(buf, tmp, i);
