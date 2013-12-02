@@ -1171,7 +1171,7 @@ static void fips_init(struct generator *gen, size_t *block, __u8 *tmp)
 	if (!gen->last_data_init) {
 		gen->last_data_init = 1;
 		spin_unlock_irqrestore(&gen->lock, flags);
-		xfer_secondary_pool(gen, EXTRACT_SIZE);
+
 		extract_generator_block(gen, (*block)++, tmp);
 
 		spin_lock_irqsave(&gen->lock, flags);
@@ -1205,12 +1205,12 @@ static ssize_t extract_entropy(struct generator *gen, void *buf,
 	size_t block = 1;
 	__u8 tmp[EXTRACT_SIZE];
 
-	fips_init(gen, &block, tmp);
-
 	trace_extract_entropy(gen->name, nbytes,
 			      ENTROPY_BITS_A(gen->a), _RET_IP_);
 	xfer_secondary_pool(gen, nbytes);
 	nbytes = account(gen->a, nbytes, NULL, NULL);
+
+	fips_init(gen, &block, tmp);
 
 	while (nbytes) {
 		extract_generator_block(gen, block++, tmp);
