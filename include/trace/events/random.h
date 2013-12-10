@@ -61,29 +61,32 @@ DEFINE_EVENT(random__mix_pool_bytes, mix_pool_bytes_nolock,
 
 TRACE_EVENT(credit_entropy_bits,
 	TP_PROTO(const char *pool_name, int bits, int entropy_count,
-		 int entropy_total, unsigned long IP),
+		 int entropy_since_push, int entropy_total, unsigned long IP),
 
-	TP_ARGS(pool_name, bits, entropy_count, entropy_total, IP),
+	TP_ARGS(pool_name, bits, entropy_count, entropy_since_push,
+		entropy_total, IP),
 
 	TP_STRUCT__entry(
 		__field( const char *,	pool_name		)
 		__field(	  int,	bits			)
 		__field(	  int,	entropy_count		)
+		__field(	  int,	entropy_since_push	)
 		__field(	  int,	entropy_total		)
 		__field(unsigned long,	IP			)
 	),
 
 	TP_fast_assign(
-		__entry->pool_name	= pool_name;
-		__entry->bits		= bits;
-		__entry->entropy_count	= entropy_count;
-		__entry->entropy_total	= entropy_total;
-		__entry->IP		= IP;
+		__entry->pool_name		= pool_name;
+		__entry->bits			= bits;
+		__entry->entropy_count		= entropy_count;
+		__entry->entropy_since_push	= entropy_since_push;
+		__entry->entropy_total		= entropy_total;
+		__entry->IP			= IP;
 	),
 
-	TP_printk("%s pool: bits %d entropy_count %d entropy_total %d "
-		  "caller %pF", __entry->pool_name, __entry->bits,
-		  __entry->entropy_count, __entry->entropy_total,
+	TP_printk("%s pool: bits %d entropy_count %d entropy_since_push %d entropy_total %d caller %pF",
+		  __entry->pool_name, __entry->bits, __entry->entropy_count,
+		  __entry->entropy_since_push, __entry->entropy_total,
 		  (void *)__entry->IP)
 );
 

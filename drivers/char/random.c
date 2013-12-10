@@ -425,6 +425,7 @@ struct entropy_store {
 	unsigned short add_ptr;
 	unsigned short input_rotate;
 	int entropy_count;
+	int entropy_since_push;
 	int entropy_total;
 	unsigned int initialized:1;
 	unsigned int limit:1;
@@ -651,11 +652,10 @@ retry:
 	if (cmpxchg(&r->entropy_count, orig, entropy_count) != orig)
 		goto retry;
 
-	r->entropy_total += nbits;
-	if (!r->initialized && r->entropy_total > 128) {
-		r->initialized = 1;
-		r->entropy_total = 0;
-		if (r == &nonblocking_pool) {
+	if (r == &nonblocking_pool) {
+		r->entropy_total += nbits;
+		if (!r->initialized && r->entropy_total > 128) {
+			r->initialized = 1;
 			prandom_reseed_late();
 			pr_notice("random: %s pool is initialized\n", r->name);
 		}
@@ -663,6 +663,7 @@ retry:
 
 	trace_credit_entropy_bits(r->name, nbits,
 				  entropy_count >> ENTROPY_SHIFT,
+				  r->entropy_since_push,
 				  r->entropy_total, _RET_IP_);
 
 	if (r == &input_pool) {
@@ -678,9 +679,9 @@ retry:
 		 * forth between them, until the output pools are 75%
 		 * full.
 		 */
+		r->entropy_since_push += nbits;
 		if (entropy_bits > random_write_wakeup_bits &&
-		    r->initialized &&
-		    r->entropy_total >= 2*random_read_wakeup_bits) {
+		    r->entropy_since_push >= 2*random_read_wakeup_bits) {
 			static struct entropy_store *last = &blocking_pool;
 			struct entropy_store *other = &blocking_pool;
 
@@ -692,7 +693,7 @@ retry:
 			if (last->entropy_count <=
 			    3 * last->poolinfo->poolfracbits / 4) {
 				schedule_work(&last->push_work);
-				r->entropy_total = 0;
+				r->entropy_since_push = 0;
 			}
 		}
 	}
