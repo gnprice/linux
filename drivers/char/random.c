@@ -293,9 +293,18 @@
 
 /*
  * The minimum number of bits of estimated entropy to use in a reseed
- * of the main output pool.
+ * of the main output pool (for /dev/urandom and the kernel's internal
+ * use) before considering it secure.
  */
 static int min_reseed_bits = 128;
+
+/*
+ * The number of bits of estimated entropy to use in a reseed of the
+ * main output pool in the steady state.  If this is larger than
+ * min_reseed_bits, then it serves as a hedge against situations where
+ * our entropy estimates are for whatever reason too optimistic.
+ */
+static int target_reseed_bits = 512;
 
 /*
  * The minimum number of bits of entropy before we wake up a read on
@@ -688,7 +697,7 @@ retry:
 		 */
 		r->entropy_since_push += nbits;
 		if (entropy_bits > random_write_wakeup_bits &&
-		    r->entropy_since_push >= min_reseed_bits) {
+		    r->entropy_since_push >= target_reseed_bits) {
 			static struct entropy_store *last = &blocking_pool;
 			struct entropy_store *other = &blocking_pool;
 
@@ -931,9 +940,9 @@ static void account_xfer(struct entropy_store *dest, int nbytes,
 		*min_bytes = random_read_wakeup_bits / 8;
 	} else {
 		/* ... or a full reseed's worth for the nonblocking
-		 * pool, except if we're hardly seeded at all, we'll
-		 * settle for enough to double what we have. */
-		*min_bytes = min(min_reseed_bits / 8,
+		 * pool, except early on we'll settle for enough to
+		 * double what we have. */
+		*min_bytes = min(target_reseed_bits / 8,
 				 (2*dest->seed_entropy_bits + 7) / 8);
 	}
 
@@ -970,7 +979,7 @@ static void push_to_pool(struct work_struct *work)
 	struct entropy_store *r = container_of(work, struct entropy_store,
 					      push_work);
 	BUG_ON(!r);
-	_xfer_secondary_pool(r, min_reseed_bits/8);
+	_xfer_secondary_pool(r, target_reseed_bits/8);
 	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
 			   r->pull->entropy_count >> ENTROPY_SHIFT);
 }
@@ -1511,8 +1520,8 @@ EXPORT_SYMBOL(generate_random_uuid);
 
 #include <linux/sysctl.h>
 
-static int min_min_reseed_bits = 32;
-static int max_min_reseed_bits = OUTPUT_POOL_WORDS * 32;
+static int hard_min_reseed_bits = 32;
+static int max_reseed_bits = OUTPUT_POOL_WORDS * 32;
 static int min_read_thresh = 8;
 static int max_read_thresh = OUTPUT_POOL_WORDS * 32;
 static int min_write_thresh;
@@ -1595,8 +1604,17 @@ struct ctl_table random_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &min_min_reseed_bits,
-		.extra2		= &max_min_reseed_bits,
+		.extra1		= &hard_min_reseed_bits,
+		.extra2		= &target_reseed_bits,
+	},
+	{
+		.procname	= "target_reseed_bits",
+		.data		= &target_reseed_bits,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_reseed_bits,
+		.extra2		= &max_reseed_bits,
 	},
 	{
 		.procname	= "read_wakeup_threshold",
