@@ -292,8 +292,14 @@
 #define ENTROPY_BITS(r) ((r)->entropy_count >> ENTROPY_SHIFT)
 
 /*
+ * The minimum number of bits of estimated entropy to use in a reseed
+ * of the main output pool.
+ */
+static int min_reseed_bits = 128;
+
+/*
  * The minimum number of bits of entropy before we wake up a read on
- * /dev/random.  Should be enough to do a significant reseed.
+ * /dev/random.
  */
 static int random_read_wakeup_bits = 64;
 
@@ -594,7 +600,7 @@ random_readable(int input_entropy_bits)
 	int thresh = random_read_wakeup_bits;
 	if (!nonblocking_pool.initialized)
 		/* ... that aren't reserved for the nonblocking pool. */
-		thresh += random_read_wakeup_bits;
+		thresh += min_reseed_bits;
 	return input_entropy_bits >= thresh;
 }
 
@@ -665,7 +671,7 @@ retry:
 
 	if (r == &nonblocking_pool) {
 		r->entropy_total += nbits;
-		if (!r->initialized && r->entropy_total > 128) {
+		if (!r->initialized && r->entropy_total >= min_reseed_bits) {
 			r->initialized = 1;
 			prandom_reseed_late();
 			pr_notice("random: %s pool is initialized\n", r->name);
@@ -692,7 +698,7 @@ retry:
 		 */
 		r->entropy_since_push += nbits;
 		if (entropy_bits > random_write_wakeup_bits &&
-		    r->entropy_since_push >= 2*random_read_wakeup_bits) {
+		    r->entropy_since_push >= min_reseed_bits) {
 			static struct entropy_store *last = &blocking_pool;
 			struct entropy_store *other = &blocking_pool;
 
@@ -929,15 +935,15 @@ static void xfer_secondary_pool(struct entropy_store *r, size_t nbytes)
 static void account_xfer(struct entropy_store *dest, int nbytes,
 			 int *min_bytes, int *reserved_bytes)
 {
-	/* Try to pull a full wakeup's worth if we might have just woken up
-	 * for it, and a full reseed's worth (which is controlled by the same
-	 * parameter) for the nonblocking pool... */
-	if (dest == &blocking_pool || dest->initialized) {
+	/* Try to pull a full wakeup's worth if we might have just
+	 * woken up for it... */
+	if (dest == &blocking_pool) {
 		*min_bytes = random_read_wakeup_bits / 8;
 	} else {
-		/* ... except if we're hardly seeded at all, we'll settle for
-		 * enough to double what we have. */
-		*min_bytes = min(random_read_wakeup_bits / 8,
+		/* ... or a full reseed's worth for the nonblocking
+		 * pool, except if we're hardly seeded at all, we'll
+		 * settle for enough to double what we have. */
+		*min_bytes = min(min_reseed_bits / 8,
 				 (dest->entropy_total+7) / 8);
 	}
 
@@ -945,7 +951,7 @@ static void account_xfer(struct entropy_store *dest, int nbytes,
 	 * when we really need it; later, reserve some for /dev/random */
 	*reserved_bytes = 0;
 	if (dest == &blocking_pool && !nonblocking_pool.initialized)
-		*reserved_bytes = random_read_wakeup_bits / 8;
+		*reserved_bytes = min_reseed_bits / 8;
 	else if (dest == &nonblocking_pool && dest->initialized)
 		*reserved_bytes = 2 * (random_read_wakeup_bits / 8);
 }
@@ -974,7 +980,7 @@ static void push_to_pool(struct work_struct *work)
 	struct entropy_store *r = container_of(work, struct entropy_store,
 					      push_work);
 	BUG_ON(!r);
-	_xfer_secondary_pool(r, random_read_wakeup_bits/8);
+	_xfer_secondary_pool(r, min_reseed_bits/8);
 	trace_push_to_pool(r->name, r->entropy_count >> ENTROPY_SHIFT,
 			   r->pull->entropy_count >> ENTROPY_SHIFT);
 }
@@ -1516,8 +1522,11 @@ EXPORT_SYMBOL(generate_random_uuid);
 
 #include <linux/sysctl.h>
 
-static int min_read_thresh = 8, min_write_thresh;
+static int min_min_reseed_bits = 32;
+static int max_min_reseed_bits = OUTPUT_POOL_WORDS * 32;
+static int min_read_thresh = 8;
 static int max_read_thresh = OUTPUT_POOL_WORDS * 32;
+static int min_write_thresh;
 static int max_write_thresh = INPUT_POOL_WORDS * 32;
 static char sysctl_bootid[16];
 
@@ -1590,6 +1599,15 @@ struct ctl_table random_table[] = {
 		.mode		= 0444,
 		.proc_handler	= proc_do_entropy,
 		.data		= &input_pool.entropy_count,
+	},
+	{
+		.procname	= "min_reseed_bits",
+		.data		= &min_reseed_bits,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_min_reseed_bits,
+		.extra2		= &max_min_reseed_bits,
 	},
 	{
 		.procname	= "read_wakeup_threshold",
