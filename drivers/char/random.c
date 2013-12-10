@@ -432,7 +432,7 @@ struct entropy_store {
 	unsigned short input_rotate;
 	int entropy_count;
 	int entropy_since_push;
-	int entropy_total;
+	int seed_entropy_bits;
 	unsigned int initialized:1;
 	unsigned int limit:1;
 	unsigned int last_data_init:1;
@@ -659,8 +659,9 @@ retry:
 		goto retry;
 
 	if (r == &nonblocking_pool) {
-		r->entropy_total += nbits;
-		if (!r->initialized && r->entropy_total >= min_reseed_bits) {
+		r->seed_entropy_bits = max(nbits, r->seed_entropy_bits);
+		if (!r->initialized &&
+		    r->seed_entropy_bits >= min_reseed_bits) {
 			r->initialized = 1;
 			prandom_reseed_late();
 			pr_notice("random: %s pool is initialized\n", r->name);
@@ -670,7 +671,7 @@ retry:
 	trace_credit_entropy_bits(r->name, nbits,
 				  entropy_count >> ENTROPY_SHIFT,
 				  r->entropy_since_push,
-				  r->entropy_total, _RET_IP_);
+				  r->seed_entropy_bits, _RET_IP_);
 
 	if (r == &input_pool) {
 		int entropy_bits = entropy_count >> ENTROPY_SHIFT;
@@ -933,7 +934,7 @@ static void account_xfer(struct entropy_store *dest, int nbytes,
 		 * pool, except if we're hardly seeded at all, we'll
 		 * settle for enough to double what we have. */
 		*min_bytes = min(min_reseed_bits / 8,
-				 (dest->entropy_total+7) / 8);
+				 (2*dest->seed_entropy_bits + 7) / 8);
 	}
 
 	/* Reserve a reseed's worth for the nonblocking pool early on
@@ -1203,10 +1204,9 @@ void get_random_bytes(void *buf, int nbytes)
 {
 #if DEBUG_RANDOM_BOOT > 0
 	if (unlikely(nonblocking_pool.initialized == 0))
-		printk(KERN_NOTICE "random: %pF get_random_bytes called "
-		       "with %d bits of entropy available\n",
-		       (void *) _RET_IP_,
-		       nonblocking_pool.entropy_total);
+		pr_notice(
+		    "random: %pF get_random_bytes called with only %d bits of seed entropy available\n",
+		    (void *) _RET_IP_, nonblocking_pool.seed_entropy_bits);
 #endif
 	trace_get_random_bytes(nbytes, _RET_IP_);
 	extract_entropy(&nonblocking_pool, buf, nbytes, NULL, NULL);
@@ -1344,9 +1344,9 @@ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 	int ret;
 
 	if (unlikely(nonblocking_pool.initialized == 0))
-		printk_once(KERN_NOTICE "random: %s urandom read "
-			    "with %d bits of entropy available\n",
-			    current->comm, nonblocking_pool.entropy_total);
+		pr_notice_once(
+		    "random: %s urandom read with only %d bits of seed entropy available\n",
+		    current->comm, nonblocking_pool.seed_entropy_bits);
 
 	ret = extract_entropy_user(&nonblocking_pool, buf, nbytes);
 
