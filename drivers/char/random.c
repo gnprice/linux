@@ -586,6 +586,17 @@ static void fast_mix(struct fast_pool *f, __u32 input[4])
 	f->count++;
 }
 
+static int
+random_readable(int input_entropy_bits)
+{
+	/* We need enough bits to wake up for ... */
+	int thresh = random_read_wakeup_bits;
+	if (!nonblocking_pool.initialized)
+		/* ... that aren't reserved for the nonblocking pool. */
+		thresh += random_read_wakeup_bits;
+	return input_entropy_bits >= thresh;
+}
+
 /*
  * Credit (or debit) the entropy store with n bits of entropy.
  * Use credit_entropy_bits_safe() if the value comes from userspace
@@ -669,7 +680,7 @@ retry:
 		int entropy_bits = entropy_count >> ENTROPY_SHIFT;
 
 		/* should we wake readers? */
-		if (entropy_bits >= random_read_wakeup_bits) {
+		if (random_readable(entropy_bits)) {
 			wake_up_interruptible(&random_read_wait);
 			kill_fasync(&fasync, SIGIO, POLL_IN);
 		}
@@ -936,9 +947,12 @@ static void account_xfer(struct entropy_store *dest, int nbytes,
 				 (dest->entropy_total+7) / 8);
 	}
 
-	/* Reserve some for /dev/random's pool, unless we really need it. */
+	/* Reserve a reseed's worth for the nonblocking pool early on
+	 * when we really need it; later, reserve some for /dev/random */
 	*reserved_bytes = 0;
-	if (!dest->limit && dest->initialized)
+	if (dest == &blocking_pool && !nonblocking_pool.initialized)
+		*reserved_bytes = random_read_wakeup_bits / 8;
+	else if (dest == &nonblocking_pool && dest->initialized)
 		*reserved_bytes = 2 * (random_read_wakeup_bits / 8);
 }
 
@@ -1329,8 +1343,7 @@ random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 			return -EAGAIN;
 
 		wait_event_interruptible(random_read_wait,
-			ENTROPY_BITS(&input_pool) >=
-			random_read_wakeup_bits);
+			random_readable(ENTROPY_BITS(&input_pool)));
 		if (signal_pending(current))
 			return -ERESTARTSYS;
 	}
@@ -1361,7 +1374,7 @@ random_poll(struct file *file, poll_table * wait)
 	poll_wait(file, &random_read_wait, wait);
 	poll_wait(file, &random_write_wait, wait);
 	mask = 0;
-	if (ENTROPY_BITS(&input_pool) >= random_read_wakeup_bits)
+	if (random_readable(ENTROPY_BITS(&input_pool)))
 		mask |= POLLIN | POLLRDNORM;
 	if (ENTROPY_BITS(&input_pool) < random_write_wakeup_bits)
 		mask |= POLLOUT | POLLWRNORM;
