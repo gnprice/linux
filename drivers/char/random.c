@@ -936,9 +936,12 @@ static void account_xfer(struct entropy_store *dest, int nbytes,
 				 (dest->entropy_total+7) / 8);
 	}
 
-	/* Reserve some for /dev/random's pool, unless we really need it. */
+	/* Reserve a reseed's worth for the nonblocking pool early on
+	 * when we really need it; later, reserve some for /dev/random */
 	*reserved_bytes = 0;
-	if (!dest->limit && dest->initialized)
+	if (dest == &blocking_pool && !nonblocking_pool->initialized)
+		*reserved_bytes = random_read_wakeup_bits / 8;
+	else if (dest == &nonblocking_pool && dest->initialized)
 		*reserved_bytes = 2 * (random_read_wakeup_bits / 8);
 }
 
