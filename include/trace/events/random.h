@@ -114,6 +114,35 @@ TRACE_EVENT(push_to_pool,
 		  __entry->input_bits)
 );
 
+TRACE_EVENT(account,
+	TP_PROTO(const char *pool_name, int requested_bytes,
+		 const char *dest_name, int min_bytes, int reserved_bytes),
+
+	TP_ARGS(pool_name, requested_bytes, dest_name, min_bytes,
+		reserved_bytes),
+
+	TP_STRUCT__entry(
+		__field( const char *,	pool_name		)
+		__field(          int,  requested_bytes         )
+		__field( const char *,  dest_name               )
+		__field(          int,  min_bytes               )
+		__field(          int,  reserved_bytes          )
+	),
+
+	TP_fast_assign(
+		__entry->pool_name		= pool_name;
+		__entry->requested_bytes	= requested_bytes;
+		__entry->dest_name		= dest_name;
+		__entry->min_bytes		= min_bytes;
+		__entry->reserved_bytes		= reserved_bytes;
+	),
+
+	TP_printk("from %s requested_bytes %d for %s min_bytes %d "
+		  "reserved_bytes %d", __entry->pool_name,
+		  __entry->requested_bytes, __entry->dest_name,
+		  __entry->min_bytes, __entry->reserved_bytes)
+);
+
 TRACE_EVENT(debit_entropy,
 	TP_PROTO(const char *pool_name, int debit_bits),
 

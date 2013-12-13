@@ -1010,6 +1010,9 @@ static size_t account(struct entropy_store *r, size_t nbytes,
 	if (dest != NULL)
 		account_xfer(dest, nbytes, &min, &reserved);
 
+	trace_account(r->name, nbytes,
+		      dest ? dest->name : "none", min, reserved);
+
 	BUG_ON(r->entropy_count > r->poolinfo->poolfracbits);
 
 	/* Can we pull enough? */
