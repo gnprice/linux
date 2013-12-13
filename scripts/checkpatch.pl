@@ -327,7 +327,8 @@ our $logFunctions = qr{(?x:
 	WARN(?:_RATELIMIT|_ONCE|)|
 	panic|
 	MODULE_[A-Z_]+|
-	seq_vprintf|seq_printf|seq_puts
+	seq_vprintf|seq_printf|seq_puts|
+	TP_printk
 )};
 
 our $signature_tags = qr{(?xi:
