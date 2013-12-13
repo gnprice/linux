@@ -288,7 +288,7 @@ TRACE_EVENT(random_read,
 
 	TP_printk("got_bits %d still_needed_bits %d "
 		  "blocking_pool_entropy_left %d input_entropy_left %d",
-		  __entry->got_bits, __entry->got_bits, __entry->pool_left,
+		  __entry->got_bits, __entry->need_bits, __entry->pool_left,
 		  __entry->input_left)
 );
 
