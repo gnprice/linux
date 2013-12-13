@@ -977,7 +977,8 @@ retry:
 	ibytes = nbytes;
 	/* If limited, never pull more than available */
 	if (r->limit)
-		ibytes = min_t(size_t, ibytes, have_bytes - reserved);
+		ibytes = min_t(size_t, ibytes,
+			       max(0, have_bytes - reserved));
 	if (ibytes < min)
 		ibytes = 0;
 	entropy_count = max_t(int, 0,
